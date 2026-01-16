@@ -1,3 +1,6 @@
+from scapy.config import conf
+conf.load_extensions = ["scapy-wmi"]
+conf.exts.loadall()
 import uuid
 from scapy.utils import (
     CLIUtil,
@@ -21,6 +24,116 @@ from scapy.layers.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 # Impersonification
 # SSPNEGO
 # Deal with release, it doesnt work on unmarshalled obj
+
+class WMI_Client(DCOM_Client):
+    auth_level: DCE_C_AUTHN_LEVEL
+    def __init__(
+        self,
+        ssp: SSP,
+        auth_level: DCE_C_AUTHN_LEVEL,
+        verb: bool
+    ):
+        self.auth_level = auth_level
+        super(WMI_Client, self).__init__(
+            ssp=ssp,
+            auth_level=auth_level,
+            verb=verb
+        )
+
+    def get_namespace(self, namespace_str: str = "root/cimv2") -> ObjectInstance:
+        CLSID_WbemLevel1Login=uuid.UUID("8BC3F05E-D86B-11D0-A075-00C04FB68820")
+        IID_IWbemLevel1Login=find_com_interface("IWbemLevel1Login")
+
+        objref = self.RemoteCreateInstance(
+            clsid=CLSID_WbemLevel1Login,
+            iids=[IID_IWbemLevel1Login],
+        )
+
+        result = objref.sr1_req(
+            pkt=NTLMLogin_Request(
+                wszNetworkResource="//./"+namespace_str,
+            ),
+            iface=IID_IWbemLevel1Login,
+            auth_level=self.auth_level
+        )
+        # objref.release()
+        # If i release this i can't recreate one
+        value = result.ppNamespace.value
+        objref_wmi = self.UnmarshallObjectReference(
+            value,
+            iid=find_com_interface("IWbemServices"),
+        )
+
+        return objref_wmi
+
+    def query(self, objref_wmi: ObjectInstance, query: str) -> ObjectInstance:
+        lang="WQL\0"
+        pktctr=ExecQuery_Request(
+                strQueryLanguage=NDRPointer(
+                    referent_id=0x72657355,
+                    value=FLAGGED_WORD_BLOB(
+                        max_count=len(lang),
+                        cBytes=len(lang)*2,
+                        clSize=len(lang),
+                        asData=lang.encode("utf-16le")
+                        )
+                    ),
+                strQuery=NDRPointer(
+                    referent_id=0x72657356,
+                    value=FLAGGED_WORD_BLOB(
+                        max_count=len(query),
+                        cBytes=len(query)*2,
+                        clSize=len(query),
+                        asData=query.encode("utf-16le")
+                        )
+                    )
+            )
+        
+        result_query = objref_wmi.sr1_req(
+            pkt=pktctr,
+            iface=find_com_interface("IWbemServices"),
+            auth_level=self.auth_level
+        )
+
+        # Unmarshall
+        ppEnum_value = result_query.ppEnum.value # IEnumWbemClassObject
+        obj_ppEnum = self.UnmarshallObjectReference(
+            ppEnum_value,
+            iid=find_com_interface("IEnumWbemClassObject"),
+        )
+
+        return obj_ppEnum
+    
+    def get_query_result(self, obj_ppEnum: ObjectInstance):
+        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]   # opnum 4 -> Next
+        req_cls = op.request
+
+        nextrq = req_cls(
+            lTimeout=-1,
+            uCount=1
+        )
+
+
+        interfaces = []
+        # Loop next
+        while True:
+            # Next request
+            result_next = obj_ppEnum.sr1_req(
+                pkt=nextrq,
+                iface=find_com_interface("IEnumWbemClassObject"),
+                auth_level=self.auth_level
+            )
+            
+            if result_next.puReturned == 0:
+                break
+            else:
+                # Take only MInterfacePointer
+                for obj in result_next.apObjects:
+                    for elt in obj.value:
+                        for ptr in elt.value:
+                            interfaces.append(ptr.value)
+
+        return interfaces
 
 @conf.commands.register
 class wmiclient(CLIUtil):
@@ -46,7 +159,7 @@ class wmiclient(CLIUtil):
 
     :param REQUIRE_ENCRYPTION: requires encryption.
     """
-    client: DCOM_Client
+    client: WMI_Client
     objref_wmi: ObjectInstance
 
     def __init__(
@@ -90,50 +203,25 @@ class wmiclient(CLIUtil):
                 # Guest mode
                 ssp = None
 
-        self.auth_level=DCE_C_AUTHN_LEVEL.PKT_INTEGRITY
+        auth_level=DCE_C_AUTHN_LEVEL.PKT_INTEGRITY
         if REQUIRE_ENCRYPTION:
-            self.auth_level = DCE_C_AUTHN_LEVEL.PKT_PRIVACY
+            auth_level = DCE_C_AUTHN_LEVEL.PKT_PRIVACY
 
         # Create connection
-        self.client = DCOM_Client(
+        self.client = WMI_Client(
             ssp=ssp,
-            auth_level=self.auth_level,
+            auth_level=auth_level,
             verb=bool(debug)
             )
         self.client.connect(target, timeout)
 
-        self.objref_wmi = self._get_namespace()
+        self.objref_wmi = self.client.get_namespace()
         self.current_namescape = "root/cimv2"
         
         # Start CLI
         if cli:
             self.loop(debug=debug)
 
-    def _get_namespace(self, namespace_str: str = "root/cimv2"):
-        CLSID_WbemLevel1Login=uuid.UUID("8BC3F05E-D86B-11D0-A075-00C04FB68820")
-        IID_IWbemLevel1Login=find_com_interface("IWbemLevel1Login")
-
-        objref = self.client.RemoteCreateInstance(
-            clsid=CLSID_WbemLevel1Login,
-            iids=[IID_IWbemLevel1Login],
-        )
-
-        result = objref.sr1_req(
-            pkt=NTLMLogin_Request(
-                wszNetworkResource="//./"+namespace_str,
-            ),
-            iface=IID_IWbemLevel1Login,
-            auth_level=self.auth_level
-        )
-        # objref.release()
-        # If i release this i can't recreate one
-        value = result.ppNamespace.value
-        objref_wmi = self.client.UnmarshallObjectReference(
-            value,
-            iid=find_com_interface("IWbemServices"),
-        )
-
-        return objref_wmi
 
     def ps1(self):
         return r"wmiclient > "
@@ -144,8 +232,8 @@ class wmiclient(CLIUtil):
 
     @CLIUtil.addcommand(spaces=True)
     def query(self, raw_query: str):
-        ppEnum = self._do_query(self.objref_wmi, self._parsequery(raw_query))
-        interfaces = self._do_get_query_result(ppEnum)
+        ppEnum = self.client.query(self.objref_wmi, self._parsequery(raw_query))
+        interfaces = self.client.get_query_result(ppEnum)
         return interfaces
 
     @CLIUtil.addoutput(query)
@@ -186,75 +274,6 @@ class wmiclient(CLIUtil):
         # Strip
         stripped = raw_query.strip("; ")
         return stripped+"\0"
-
-    def _do_query(self, objref_wmi: ObjectInstance, query: str) -> ObjectInstance:
-        lang="WQL\0"
-        pktctr=ExecQuery_Request(
-                strQueryLanguage=NDRPointer(
-                    referent_id=0x72657355,
-                    value=FLAGGED_WORD_BLOB(
-                        max_count=len(lang),
-                        cBytes=len(lang)*2,
-                        clSize=len(lang),
-                        asData=lang.encode("utf-16le")
-                        )
-                    ),
-                strQuery=NDRPointer(
-                    referent_id=0x72657356,
-                    value=FLAGGED_WORD_BLOB(
-                        max_count=len(query),
-                        cBytes=len(query)*2,
-                        clSize=len(query),
-                        asData=query.encode("utf-16le")
-                        )
-                    )
-            )
-        
-        result_query = objref_wmi.sr1_req(
-            pkt=pktctr,
-            iface=find_com_interface("IWbemServices"),
-            auth_level=self.auth_level
-        )
-
-        # Unmarshall
-        ppEnum_value = result_query.ppEnum.value # IEnumWbemClassObject
-        obj_ppEnum = self.client.UnmarshallObjectReference(
-            ppEnum_value,
-            iid=find_com_interface("IEnumWbemClassObject"),
-        )
-
-        return obj_ppEnum
-    
-    def _do_get_query_result(self, obj_ppEnum: ObjectInstance):
-        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]   # opnum 4 -> Next
-        req_cls = op.request
-
-        nextrq = req_cls(
-            lTimeout=-1,
-            uCount=1
-        )
-
-
-        interfaces = []
-        # Loop next
-        while True:
-            # Next request
-            result_next = obj_ppEnum.sr1_req(
-                pkt=nextrq,
-                iface=find_com_interface("IEnumWbemClassObject"),
-                auth_level=self.auth_level
-            )
-            
-            if result_next.puReturned == 0:
-                break
-            else:
-                # Take only MInterfacePointer
-                for obj in result_next.apObjects:
-                    for elt in obj.value:
-                        for ptr in elt.value:
-                            interfaces.append(ptr.value)
-
-        return interfaces
     
     def _list_namespaces(self, parent_namespace: str) -> list:
         objref_wmi: ObjectInstance
