@@ -1,5 +1,5 @@
 from scapy.config import conf
-conf.load_extensions = ["scapy-wmi"]
+conf.load_extensions.append("scapy-wmi")
 conf.exts.loadall()
 import uuid
 from scapy.utils import (
@@ -307,7 +307,7 @@ class wmiclient(CLIUtil):
 
 if __name__ == '__main__':
     from scapy.layers.ntlm import NTLMSSP
-    
+
     ntlmssp = NTLMSSP(UPN="Administrator", PASSWORD="StrongPa55!")
     wmiclient("192.168.100.100", ssp=ntlmssp, debug=1, REQUIRE_ENCRYPTION=False)
 
