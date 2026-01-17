@@ -11,11 +11,16 @@ from scapy.layers.dcerpc import find_com_interface
 from scapy.layers.dcerpc import *
 from scapy.layers.msrpce.all import *
 from scapy.layers.msrpce.msdcom import DCOM_Client, ObjectInstance, OBJREF
-from scapy.layers.msrpce.raw.ms_wmi import NTLMLogin_Request # type: ignore
 import scapy.layers.msrpce.raw.ms_wmi # type: ignore
-from scapy.layers.msrpce.raw.ms_wmi import FLAGGED_WORD_BLOB, ExecQuery_Request
-from scapy.layers.msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS
-from scapy.layers.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
+from scapy.layers.msrpce.raw.ms_wmi import NTLMLogin_Request, FLAGGED_WORD_BLOB, ExecQuery_Request, ExecQuery_Response # type: ignore
+from scapy.layers.msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer # type: ignore
+from scapy.layers.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK # type: ignore
+
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from layers.msrpce.raw.ms_wmi import NTLMLogin_Request, FLAGGED_WORD_BLOB, ExecQuery_Request, ExecQuery_Response
+    from layers.msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer
+    from layers.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 
 # TODO
 # Change namespace
@@ -95,8 +100,12 @@ class WMI_Client(DCOM_Client):
             auth_level=self.auth_level
         )
 
+        if not isinstance(result_query, ExecQuery_Response):
+            result_query.show()
+            raise ValueError("Query failed !")
+
         # Unmarshall
-        ppEnum_value = result_query.ppEnum.value # IEnumWbemClassObject
+        ppEnum_value: MInterfacePointer = result_query.ppEnum.value # IEnumWbemClassObject
         obj_ppEnum = self.UnmarshallObjectReference(
             ppEnum_value,
             iid=find_com_interface("IEnumWbemClassObject"),
@@ -104,7 +113,7 @@ class WMI_Client(DCOM_Client):
 
         return obj_ppEnum
     
-    def get_query_result(self, obj_ppEnum: ObjectInstance):
+    def get_query_result(self, obj_ppEnum: ObjectInstance) -> list[MInterfacePointer]:
         op = IENUMWBEMCLASSOBJECT_OPNUMS[4]   # opnum 4 -> Next
         req_cls = op.request
 
@@ -113,8 +122,7 @@ class WMI_Client(DCOM_Client):
             uCount=1
         )
 
-
-        interfaces = []
+        interfaces: list[MInterfacePointer] = []
         # Loop next
         while True:
             # Next request
@@ -227,6 +235,7 @@ class wmiclient(CLIUtil):
         return r"wmiclient > "
 
     def close(self):
+        self.objref_wmi.release()
         self.client.close()
         print("Connection closed")
 
@@ -234,6 +243,7 @@ class wmiclient(CLIUtil):
     def query(self, raw_query: str):
         ppEnum = self.client.query(self.objref_wmi, self._parsequery(raw_query))
         interfaces = self.client.get_query_result(ppEnum)
+        ppEnum.release()
         return interfaces
 
     @CLIUtil.addoutput(query)
@@ -280,7 +290,7 @@ class wmiclient(CLIUtil):
         if parent_namespace == self.current_namescape:
             objref_wmi = self.objref_wmi
         else:
-            objref_wmi = self._get_namespace(parent_namespace)
+            objref_wmi = self.client.get_namespace(parent_namespace)
         ns_interfaces = self.query(objref_wmi, "SELECT * FROM __Namespace")
         names = []
         for elt in ns_interfaces:
@@ -290,7 +300,7 @@ class wmiclient(CLIUtil):
     
     @CLIUtil.addcommand()
     def namespace(self, namespace: str):
-        self.objref_wmi = self._get_namespace(namespace)
+        self.objref_wmi = self.client.get_namespace(namespace)
         self.current_namescape = namespace
         print("Switched to "+namespace)
 
@@ -310,4 +320,34 @@ if __name__ == '__main__':
 
     ntlmssp = NTLMSSP(UPN="Administrator", PASSWORD="StrongPa55!")
     wmiclient("192.168.100.100", ssp=ntlmssp, debug=1, REQUIRE_ENCRYPTION=False)
+
+    # client = WMI_Client(ntlmssp, DCE_C_AUTHN_LEVEL.PKT_INTEGRITY, verb=False)
+    # client.connect("192.168.100.100")
+
+    # namespace = client.get_namespace()
+    # ppEnum = client.query(namespace, "SELECT name FROM Win32_PerfRawData_PerfProc_Process")
+    # interfaces = client.get_query_result(ppEnum)
+    # # ppEnum.release()
+    # obj_ = OBJREF(interfaces[0].abData)
+    # # Do thing to get properties
+    # encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
+    # objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
+    # objBlk.parseObject()
+    # record = objBlk.ctCurrent.properties
+    # print(record)
+
+
+
+    # ppEnum2 = client.query(namespace, "SELECT IDProcess FROM Win32_PerfRawData_PerfProc_Process")
+    # interfaces = client.get_query_result(ppEnum2)
+    # ppEnum2.release()
+    # obj_ = OBJREF(interfaces[0].abData)
+    # # Do thing to get properties
+    # encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
+    # objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
+    # objBlk.parseObject()
+    # record = objBlk.ctCurrent.properties
+    # print(record)
+    # namespace.release()
+    # client.close()
 
