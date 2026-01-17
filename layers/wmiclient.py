@@ -29,9 +29,11 @@ if TYPE_CHECKING:
 # Impersonification
 # SSPNEGO
 # Deal with release, it doesnt work on unmarshalled obj
+# solve six problem
 
 class WMI_Client(DCOM_Client):
     auth_level: DCE_C_AUTHN_LEVEL
+    current_namespace: ObjectInstance
     def __init__(
         self,
         ssp: SSP,
@@ -70,8 +72,12 @@ class WMI_Client(DCOM_Client):
         )
 
         return objref_wmi
+    
+    def set_namespace(self, namespace_str: str = "root/cimv2") -> None:
+        objref_wmi = self.get_namespace(namespace_str)
+        self.current_namespace = objref_wmi
 
-    def query(self, objref_wmi: ObjectInstance, query: str) -> ObjectInstance:
+    def query(self, query: str, objref_wmi: ObjectInstance | None = None) -> ObjectInstance:
         lang="WQL\0"
         pktctr=ExecQuery_Request(
                 strQueryLanguage=NDRPointer(
@@ -93,7 +99,9 @@ class WMI_Client(DCOM_Client):
                         )
                     )
             )
-        
+        if objref_wmi is None:
+            objref_wmi = self.current_namespace
+
         result_query = objref_wmi.sr1_req(
             pkt=pktctr,
             iface=find_com_interface("IWbemServices"),
@@ -142,6 +150,32 @@ class WMI_Client(DCOM_Client):
                             interfaces.append(ptr.value)
 
         return interfaces
+    
+    def count_query_result(self, obj_ppEnum: ObjectInstance) -> int:
+        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]   # opnum 4 -> Next
+        req_cls = op.request
+
+        nextrq = req_cls(
+            lTimeout=-1,
+            uCount=1
+        )
+
+        acc = 0
+        # Loop next
+        while True:
+            # Next request
+            result_next = obj_ppEnum.sr1_req(
+                pkt=nextrq,
+                iface=find_com_interface("IEnumWbemClassObject"),
+                auth_level=self.auth_level
+            )
+            
+            if result_next.puReturned == 0:
+                break
+            else:
+                acc += 1
+        return acc
+        
 
 @conf.commands.register
 class wmiclient(CLIUtil):
@@ -241,7 +275,7 @@ class wmiclient(CLIUtil):
 
     @CLIUtil.addcommand(spaces=True)
     def query(self, raw_query: str):
-        ppEnum = self.client.query(self.objref_wmi, self._parsequery(raw_query))
+        ppEnum = self.client.query(self._parsequery(raw_query), self.objref_wmi)
         interfaces = self.client.get_query_result(ppEnum)
         ppEnum.release()
         return interfaces
