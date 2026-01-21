@@ -1,1 +1,7 @@
 build/
+*.pyc
+*.egg-info
+.vscode
+parser.out
+dist/
+.venv
