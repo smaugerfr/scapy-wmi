@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from scapy_wmi.wmiclient import wmiclient
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     ntlmssp = NTLMSSP(UPN="Administrator", PASSWORD="StrongPa55!")
     wmiclient("192.168.100.100", ssp=ntlmssp, debug=1, REQUIRE_ENCRYPTION=False)
@@ -28,8 +28,6 @@ if __name__ == '__main__':
     # record = objBlk.ctCurrent.properties
     # print(record)
 
-
-
     # ppEnum2 = client.query(namespace, "SELECT IDProcess FROM Win32_PerfRawData_PerfProc_Process")
     # interfaces = client.get_query_result(ppEnum2)
     # ppEnum2.release()
@@ -42,4 +40,3 @@ if __name__ == '__main__':
     # print(record)
     # namespace.release()
     # client.close()
-

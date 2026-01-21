@@ -7,15 +7,21 @@ from scapy.layers.dcerpc import find_com_interface
 from scapy.layers.dcerpc import *
 from scapy.layers.msrpce.all import *
 from scapy.layers.msrpce.msdcom import DCOM_Client, ObjectInstance, OBJREF
-import scapy.layers.msrpce.raw.ms_wmi # type: ignore
-from scapy.layers.msrpce.raw.ms_wmi import NTLMLogin_Request, FLAGGED_WORD_BLOB, ExecQuery_Request, ExecQuery_Response # type: ignore
-from scapy.layers.msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer # type: ignore
-from scapy.layers.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK # type: ignore
+import scapy.layers.msrpce.raw.ms_wmi  # type: ignore
+from scapy.layers.msrpce.raw.ms_wmi import NTLMLogin_Request, FLAGGED_WORD_BLOB, ExecQuery_Request, ExecQuery_Response  # type: ignore
+from scapy.layers.msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer  # type: ignore
+from scapy.layers.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK  # type: ignore
 from scapy_wmi.types.wmi_classes import WMI_Class
 
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
-    from msrpce.raw.ms_wmi import NTLMLogin_Request, FLAGGED_WORD_BLOB, ExecQuery_Request, ExecQuery_Response
+    from msrpce.raw.ms_wmi import (
+        NTLMLogin_Request,
+        FLAGGED_WORD_BLOB,
+        ExecQuery_Request,
+        ExecQuery_Response,
+    )
     from msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer
     from msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
     from types.wmi_classes import WMI_Class
@@ -29,25 +35,18 @@ if TYPE_CHECKING:
 # Deal with release, it doesnt work on unmarshalled obj
 # solve six problem
 
+
 class WMI_Client(DCOM_Client):
     auth_level: DCE_C_AUTHN_LEVEL
     current_namespace: ObjectInstance
-    def __init__(
-        self,
-        ssp: SSP,
-        auth_level: DCE_C_AUTHN_LEVEL,
-        verb: bool
-    ):
+
+    def __init__(self, ssp: SSP, auth_level: DCE_C_AUTHN_LEVEL, verb: bool):
         self.auth_level = auth_level
-        super(WMI_Client, self).__init__(
-            ssp=ssp,
-            auth_level=auth_level,
-            verb=verb
-        )
+        super(WMI_Client, self).__init__(ssp=ssp, auth_level=auth_level, verb=verb)
 
     def get_namespace(self, namespace_str: str = "root/cimv2") -> ObjectInstance:
-        CLSID_WbemLevel1Login=uuid.UUID("8BC3F05E-D86B-11D0-A075-00C04FB68820")
-        IID_IWbemLevel1Login=find_com_interface("IWbemLevel1Login")
+        CLSID_WbemLevel1Login = uuid.UUID("8BC3F05E-D86B-11D0-A075-00C04FB68820")
+        IID_IWbemLevel1Login = find_com_interface("IWbemLevel1Login")
 
         objref = self.RemoteCreateInstance(
             clsid=CLSID_WbemLevel1Login,
@@ -56,10 +55,10 @@ class WMI_Client(DCOM_Client):
 
         result = objref.sr1_req(
             pkt=NTLMLogin_Request(
-                wszNetworkResource="//./"+namespace_str,
+                wszNetworkResource="//./" + namespace_str,
             ),
             iface=IID_IWbemLevel1Login,
-            auth_level=self.auth_level
+            auth_level=self.auth_level,
         )
         # objref.release()
         # If i release this i can't recreate one
@@ -70,40 +69,42 @@ class WMI_Client(DCOM_Client):
         )
 
         return objref_wmi
-    
+
     def set_namespace(self, namespace_str: str = "root/cimv2") -> None:
         objref_wmi = self.get_namespace(namespace_str)
         self.current_namespace = objref_wmi
 
-    def query(self, query: str, objref_wmi: ObjectInstance | None = None) -> ObjectInstance:
-        lang="WQL\0"
-        pktctr=ExecQuery_Request(
-                strQueryLanguage=NDRPointer(
-                    referent_id=0x72657355,
-                    value=FLAGGED_WORD_BLOB(
-                        max_count=len(lang),
-                        cBytes=len(lang)*2,
-                        clSize=len(lang),
-                        asData=lang.encode("utf-16le")
-                        )
-                    ),
-                strQuery=NDRPointer(
-                    referent_id=0x72657356,
-                    value=FLAGGED_WORD_BLOB(
-                        max_count=len(query),
-                        cBytes=len(query)*2,
-                        clSize=len(query),
-                        asData=query.encode("utf-16le")
-                        )
-                    )
-            )
+    def query(
+        self, query: str, objref_wmi: ObjectInstance | None = None
+    ) -> ObjectInstance:
+        lang = "WQL\0"
+        pktctr = ExecQuery_Request(
+            strQueryLanguage=NDRPointer(
+                referent_id=0x72657355,
+                value=FLAGGED_WORD_BLOB(
+                    max_count=len(lang),
+                    cBytes=len(lang) * 2,
+                    clSize=len(lang),
+                    asData=lang.encode("utf-16le"),
+                ),
+            ),
+            strQuery=NDRPointer(
+                referent_id=0x72657356,
+                value=FLAGGED_WORD_BLOB(
+                    max_count=len(query),
+                    cBytes=len(query) * 2,
+                    clSize=len(query),
+                    asData=query.encode("utf-16le"),
+                ),
+            ),
+        )
         if objref_wmi is None:
             objref_wmi = self.current_namespace
 
         result_query = objref_wmi.sr1_req(
             pkt=pktctr,
             iface=find_com_interface("IWbemServices"),
-            auth_level=self.auth_level
+            auth_level=self.auth_level,
         )
 
         if not isinstance(result_query, ExecQuery_Response):
@@ -111,22 +112,21 @@ class WMI_Client(DCOM_Client):
             raise ValueError("Query failed !")
 
         # Unmarshall
-        ppEnum_value: MInterfacePointer = result_query.ppEnum.value # IEnumWbemClassObject
+        ppEnum_value: MInterfacePointer = (
+            result_query.ppEnum.value
+        )  # IEnumWbemClassObject
         obj_ppEnum = self.UnmarshallObjectReference(
             ppEnum_value,
             iid=find_com_interface("IEnumWbemClassObject"),
         )
 
         return obj_ppEnum
-    
+
     def get_query_result(self, obj_ppEnum: ObjectInstance) -> list[MInterfacePointer]:
-        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]   # opnum 4 -> Next
+        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
         req_cls = op.request
 
-        nextrq = req_cls(
-            lTimeout=-1,
-            uCount=1
-        )
+        nextrq = req_cls(lTimeout=-1, uCount=1)
 
         interfaces: list[MInterfacePointer] = []
         # Loop next
@@ -135,9 +135,9 @@ class WMI_Client(DCOM_Client):
             result_next = obj_ppEnum.sr1_req(
                 pkt=nextrq,
                 iface=find_com_interface("IEnumWbemClassObject"),
-                auth_level=self.auth_level
+                auth_level=self.auth_level,
             )
-            
+
             if result_next.puReturned == 0:
                 break
             else:
@@ -148,15 +148,12 @@ class WMI_Client(DCOM_Client):
                             interfaces.append(ptr.value)
 
         return interfaces
-    
+
     def count_query_result(self, obj_ppEnum: ObjectInstance) -> int:
-        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]   # opnum 4 -> Next
+        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
         req_cls = op.request
 
-        nextrq = req_cls(
-            lTimeout=-1,
-            uCount=1
-        )
+        nextrq = req_cls(lTimeout=-1, uCount=1)
 
         acc = 0
         # Loop next
@@ -165,23 +162,20 @@ class WMI_Client(DCOM_Client):
             result_next = obj_ppEnum.sr1_req(
                 pkt=nextrq,
                 iface=find_com_interface("IEnumWbemClassObject"),
-                auth_level=self.auth_level
+                auth_level=self.auth_level,
             )
-            
+
             if result_next.puReturned == 0:
                 break
             else:
                 acc += 1
         return acc
-    
+
     def get_query_result_object(self, obj_ppEnum: ObjectInstance) -> list[WMI_Class]:
-        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]   # opnum 4 -> Next
+        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
         req_cls = op.request
 
-        nextrq = req_cls(
-            lTimeout=-1,
-            uCount=1
-        )
+        nextrq = req_cls(lTimeout=-1, uCount=1)
 
         objects: list[WMI_Class] = []
         # Loop next
@@ -190,9 +184,9 @@ class WMI_Client(DCOM_Client):
             result_next = obj_ppEnum.sr1_req(
                 pkt=nextrq,
                 iface=find_com_interface("IEnumWbemClassObject"),
-                auth_level=self.auth_level
+                auth_level=self.auth_level,
             )
-            
+
             if result_next.puReturned == 0:
                 break
             else:
@@ -202,12 +196,15 @@ class WMI_Client(DCOM_Client):
                         for ptr in elt.value:
                             obj_ = OBJREF(ptr.value.abData)
                             # Do thing to get properties
-                            encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
+                            encodingUnit: ENCODING_UNIT = ENCODING_UNIT(
+                                obj_.pObjectData.load
+                            )
                             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
                             objBlk.parseObject()
                             record = objBlk.ctCurrent.properties
                             objects.append(WMI_Class(record))
         return objects
+
 
 @conf.commands.register
 class wmiclient(CLIUtil):
@@ -233,6 +230,7 @@ class wmiclient(CLIUtil):
 
     :param REQUIRE_ENCRYPTION: requires encryption.
     """
+
     client: WMI_Client
     objref_wmi: ObjectInstance
 
@@ -277,25 +275,20 @@ class wmiclient(CLIUtil):
                 # Guest mode
                 ssp = None
 
-        auth_level=DCE_C_AUTHN_LEVEL.PKT_INTEGRITY
+        auth_level = DCE_C_AUTHN_LEVEL.PKT_INTEGRITY
         if REQUIRE_ENCRYPTION:
             auth_level = DCE_C_AUTHN_LEVEL.PKT_PRIVACY
 
         # Create connection
-        self.client = WMI_Client(
-            ssp=ssp,
-            auth_level=auth_level,
-            verb=bool(debug)
-            )
+        self.client = WMI_Client(ssp=ssp, auth_level=auth_level, verb=bool(debug))
         self.client.connect(target, timeout)
 
         self.objref_wmi = self.client.get_namespace()
         self.current_namescape = "root/cimv2"
-        
+
         # Start CLI
         if cli:
             self.loop(debug=debug)
-
 
     def ps1(self):
         return r"wmiclient > "
@@ -329,19 +322,19 @@ class wmiclient(CLIUtil):
             # Display
             for key in record:
                 print(f"{key}{" " * (pad_len - len(key))}: ", end="")
-                if type(record[key]['value']) is list:
-                    for item in record[key]['value']:
-                        print(item, end=', ')
+                if type(record[key]["value"]) is list:
+                    for item in record[key]["value"]:
+                        print(item, end=", ")
                     print()
                 else:
-                    print('%s' % record[key]['value'])
+                    print("%s" % record[key]["value"])
             print()
 
     def _parsequery(self, raw_query: str) -> str:
         """
         Docstring for _parsequery
-        
-        :param self: Transform a raw query to one to send to the server 
+
+        :param self: Transform a raw query to one to send to the server
         :param raw_query: User input
         :type raw_query: str
         :return: Prepared query
@@ -349,8 +342,8 @@ class wmiclient(CLIUtil):
         """
         # Strip
         stripped = raw_query.strip("; ")
-        return stripped+"\0"
-    
+        return stripped + "\0"
+
     def _list_namespaces(self, parent_namespace: str) -> list:
         objref_wmi: ObjectInstance
         if parent_namespace == self.current_namescape:
@@ -363,12 +356,12 @@ class wmiclient(CLIUtil):
             names.append(elt["Name"])
         print(names)
         return names
-    
+
     @CLIUtil.addcommand()
     def namespace(self, namespace: str):
         self.objref_wmi = self.client.get_namespace(namespace)
         self.current_namescape = namespace
-        print("Switched to "+namespace)
+        print("Switched to " + namespace)
 
     @CLIUtil.addcomplete(namespace)
     def namespace_complete(self, namespace: str) -> list:
