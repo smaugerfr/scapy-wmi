@@ -3,31 +3,22 @@ from scapy.utils import (
     CLIUtil,
 )
 from scapy.layers.spnego import SPNEGOSSP
-from scapy.layers.dcerpc import find_com_interface
-from scapy.layers.dcerpc import *
-from scapy.layers.msrpce.all import *
+from scapy.layers.gssapi import SSP
+from scapy.config import conf
+from scapy.layers.dcerpc import find_com_interface, DCE_C_AUTHN_LEVEL, NDRPointer
 from scapy.layers.msrpce.msdcom import DCOM_Client, ObjectInstance, OBJREF
-import scapy.layers.msrpce.raw.ms_wmi  # type: ignore
-from scapy.layers.msrpce.raw.ms_wmi import NTLMLogin_Request, FLAGGED_WORD_BLOB, ExecQuery_Request, ExecQuery_Response  # type: ignore
-from scapy.layers.msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer  # type: ignore
-from scapy.layers.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK  # type: ignore
+from scapy_wmi.msrpce.raw.ms_wmi import (
+    NTLMLogin_Request,
+    FLAGGED_WORD_BLOB,
+    ExecQuery_Request,
+    ExecQuery_Response,
+    IENUMWBEMCLASSOBJECT_OPNUMS,
+    MInterfacePointer,
+)
+from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 from scapy_wmi.types.wmi_classes import WMI_Class
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from msrpce.raw.ms_wmi import (
-        NTLMLogin_Request,
-        FLAGGED_WORD_BLOB,
-        ExecQuery_Request,
-        ExecQuery_Response,
-    )
-    from msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer
-    from msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
-    from types.wmi_classes import WMI_Class
-
 # TODO
-# Change namespace
 # List class
 # Implement class, filter
 # Impersonification
@@ -60,6 +51,8 @@ class WMI_Client(DCOM_Client):
             iface=IID_IWbemLevel1Login,
             auth_level=self.auth_level,
         )
+        if result.ppNamespace is None:
+            raise ValueError("NTLMLogin_Request failed !")
         # objref.release()
         # If i release this i can't recreate one
         value = result.ppNamespace.value
@@ -346,15 +339,15 @@ class wmiclient(CLIUtil):
 
     def _list_namespaces(self, parent_namespace: str) -> list:
         objref_wmi: ObjectInstance
-        if parent_namespace == self.current_namescape:
+        if parent_namespace.strip("/") == self.current_namescape:
             objref_wmi = self.objref_wmi
         else:
-            objref_wmi = self.client.get_namespace(parent_namespace)
-        ns_interfaces = self.query(objref_wmi, "SELECT * FROM __Namespace")
+            objref_wmi = self.client.get_namespace(parent_namespace.strip("/"))
+        ppEnum = self.client.query("SELECT * FROM __Namespace", objref_wmi)
+        ns_interfaces = self.client.get_query_result_object(ppEnum)
         names = []
         for elt in ns_interfaces:
-            names.append(elt["Name"])
-        print(names)
+            names.append(parent_namespace+elt.Name["value"])
         return names
 
     @CLIUtil.addcommand()
@@ -365,9 +358,7 @@ class wmiclient(CLIUtil):
 
     @CLIUtil.addcomplete(namespace)
     def namespace_complete(self, namespace: str) -> list:
-        print("called")
-        if namespace.endswith("/"):
-            print("test")
-            return self._list_namespaces(namespace.strip("/"))
+        if namespace.endswith("/") and namespace.startswith("root/"):
+            return self._list_namespaces(namespace)
         else:
-            return []
+            return ["root/"]
