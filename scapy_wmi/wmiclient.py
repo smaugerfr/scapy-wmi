@@ -19,7 +19,6 @@ from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 from scapy_wmi.types.wmi_classes import WMI_Class
 
 # TODO
-# List class
 # Implement class, filter
 # Impersonification
 # SSPNEGO
@@ -323,6 +322,38 @@ class wmiclient(CLIUtil):
                     print("%s" % record[key]["value"])
             print()
 
+    @CLIUtil.addcommand()
+    def getclass(self, classname: str):
+        ppEnum = self.client.query(self._parsequery(f"SELECT * FROM {classname}"), self.objref_wmi)
+        interfaces = self.client.get_query_result(ppEnum)
+        ppEnum.release()
+        return interfaces
+    
+    @CLIUtil.addoutput(getclass)
+    def class_output(self, interfaces):
+        for interface in interfaces:
+            obj_ = OBJREF(interface.abData)
+            # Do thing to get properties
+            encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
+            objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
+            objBlk.parseObject()
+            record = objBlk.ctCurrent.properties
+            # Get padding, get the longer title
+            pad_len = 0
+            for col in record:
+                if len(col) > pad_len:
+                    pad_len = len(col)
+            # Display
+            for key in record:
+                print(f"{key}{" " * (pad_len - len(key))}: ", end="")
+                if type(record[key]["value"]) is list:
+                    for item in record[key]["value"]:
+                        print(item, end=", ")
+                    print()
+                else:
+                    print("%s" % record[key]["value"])
+            print()
+
     def _parsequery(self, raw_query: str) -> str:
         """
         Docstring for _parsequery
@@ -362,3 +393,5 @@ class wmiclient(CLIUtil):
             return self._list_namespaces(namespace)
         else:
             return ["root/"]
+        
+
