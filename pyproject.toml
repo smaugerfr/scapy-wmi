@@ -31,8 +31,11 @@ classifiers = [
 
 [tool.setuptools.packages.find]
 include = [
-    "layers*",
+    "scapy_wmi*",
 ]
+
+[tool.setuptools.package-data]
+"scapy_wmi" = ["py.typed"]
 
 [tool.black]
 line-length = 88

@@ -15,12 +15,14 @@ import scapy.layers.msrpce.raw.ms_wmi # type: ignore
 from scapy.layers.msrpce.raw.ms_wmi import NTLMLogin_Request, FLAGGED_WORD_BLOB, ExecQuery_Request, ExecQuery_Response # type: ignore
 from scapy.layers.msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer # type: ignore
 from scapy.layers.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK # type: ignore
+from scapy_wmi.types.wmi_classes import WMI_Class
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from layers.msrpce.raw.ms_wmi import NTLMLogin_Request, FLAGGED_WORD_BLOB, ExecQuery_Request, ExecQuery_Response
-    from layers.msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer
-    from layers.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
+    from msrpce.raw.ms_wmi import NTLMLogin_Request, FLAGGED_WORD_BLOB, ExecQuery_Request, ExecQuery_Response
+    from msrpce.raw.ms_wmi import IENUMWBEMCLASSOBJECT_OPNUMS, MInterfacePointer
+    from msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
+    from types.wmi_classes import WMI_Class
 
 # TODO
 # Change namespace
@@ -175,7 +177,41 @@ class WMI_Client(DCOM_Client):
             else:
                 acc += 1
         return acc
-        
+    
+    def get_query_result_object(self, obj_ppEnum: ObjectInstance) -> list[WMI_Class]:
+        op = IENUMWBEMCLASSOBJECT_OPNUMS[4]   # opnum 4 -> Next
+        req_cls = op.request
+
+        nextrq = req_cls(
+            lTimeout=-1,
+            uCount=1
+        )
+
+        objects: list[WMI_Class] = []
+        # Loop next
+        while True:
+            # Next request
+            result_next = obj_ppEnum.sr1_req(
+                pkt=nextrq,
+                iface=find_com_interface("IEnumWbemClassObject"),
+                auth_level=self.auth_level
+            )
+            
+            if result_next.puReturned == 0:
+                break
+            else:
+                # Take only MInterfacePointer
+                for obj in result_next.apObjects:
+                    for elt in obj.value:
+                        for ptr in elt.value:
+                            obj_ = OBJREF(ptr.value.abData)
+                            # Do thing to get properties
+                            encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
+                            objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
+                            objBlk.parseObject()
+                            record = objBlk.ctCurrent.properties
+                            objects.append(WMI_Class(record))
+        return objects
 
 @conf.commands.register
 class wmiclient(CLIUtil):
