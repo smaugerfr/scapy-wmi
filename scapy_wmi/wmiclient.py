@@ -5,7 +5,12 @@ from scapy.utils import (
 from scapy.layers.spnego import SPNEGOSSP
 from scapy.layers.gssapi import SSP
 from scapy.config import conf
-from scapy.layers.dcerpc import find_com_interface, DCE_C_AUTHN_LEVEL, NDRPointer
+from scapy.layers.dcerpc import (
+    find_com_interface,
+    DCE_C_AUTHN_LEVEL,
+    NDRPointer,
+    RPC_C_IMP_LEVEL,
+)
 from scapy.layers.msrpce.msdcom import DCOM_Client, ObjectInstance, OBJREF
 from scapy_wmi.msrpce.raw.ms_wmi import (
     NTLMLogin_Request,
@@ -19,9 +24,8 @@ from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 from scapy_wmi.types.wmi_classes import WMI_Class
 
 # TODO
+# SSPNEGO, fix two ssp
 # Implement class, filter
-# Impersonification
-# SSPNEGO
 # Deal with release, it doesnt work on unmarshalled obj
 # solve six problem
 
@@ -32,7 +36,12 @@ class WMI_Client(DCOM_Client):
 
     def __init__(self, ssp: SSP, auth_level: DCE_C_AUTHN_LEVEL, verb: bool):
         self.auth_level = auth_level
-        super(WMI_Client, self).__init__(ssp=ssp, auth_level=auth_level, verb=verb)
+        super(WMI_Client, self).__init__(
+            ssp=ssp,
+            auth_level=auth_level,
+            verb=verb,
+            impersonation_type=RPC_C_IMP_LEVEL.IMPERSONATE,
+        )
 
     def get_namespace(self, namespace_str: str = "root/cimv2") -> ObjectInstance:
         CLSID_WbemLevel1Login = uuid.UUID("8BC3F05E-D86B-11D0-A075-00C04FB68820")
@@ -201,7 +210,7 @@ class WMI_Client(DCOM_Client):
 @conf.commands.register
 class wmiclient(CLIUtil):
     r"""
-    A simple SMB client CLI powered by Scapy
+    A simple WMI client CLI powered by Scapy
 
     :param target: can be a hostname, the IPv4 or the IPv6 to connect to
     :param UPN: the upn to use (DOMAIN/USER, DOMAIN\USER, USER@DOMAIN or USER)
@@ -274,7 +283,6 @@ class wmiclient(CLIUtil):
         # Create connection
         self.client = WMI_Client(ssp=ssp, auth_level=auth_level, verb=bool(debug))
         self.client.connect(target, timeout)
-
         self.objref_wmi = self.client.get_namespace()
         self.current_namescape = "root/cimv2"
 
@@ -324,11 +332,13 @@ class wmiclient(CLIUtil):
 
     @CLIUtil.addcommand()
     def getclass(self, classname: str):
-        ppEnum = self.client.query(self._parsequery(f"SELECT * FROM {classname}"), self.objref_wmi)
+        ppEnum = self.client.query(
+            self._parsequery(f"SELECT * FROM {classname}"), self.objref_wmi
+        )
         interfaces = self.client.get_query_result(ppEnum)
         ppEnum.release()
         return interfaces
-    
+
     @CLIUtil.addoutput(getclass)
     def class_output(self, interfaces):
         for interface in interfaces:
@@ -378,7 +388,7 @@ class wmiclient(CLIUtil):
         ns_interfaces = self.client.get_query_result_object(ppEnum)
         names = []
         for elt in ns_interfaces:
-            names.append(parent_namespace+elt.Name["value"])
+            names.append(parent_namespace + elt.Name["value"])
         return names
 
     @CLIUtil.addcommand()
@@ -393,5 +403,3 @@ class wmiclient(CLIUtil):
             return self._list_namespaces(namespace)
         else:
             return ["root/"]
-        
-
