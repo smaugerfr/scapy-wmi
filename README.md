@@ -4,8 +4,8 @@
 This package provides a plugin that hooks into Scapy to register [MS-WMI] dissector/builder and a new WMI layer with its client.
 
 ### Usage
-To fully work, this (https://github.com/secdev/scapy/issues/4900)[issue] must be taken into account
- 
+To fully work, this [issue](https://github.com/secdev/scapy/issues/4900) must be taken into account
+
 By adding follwing to `~/.config/scapy/prestart.py`
 ```
 from scapy.config import conf
