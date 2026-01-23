@@ -23,7 +23,6 @@ from scapy.fields import (
     LESignedLongField,
     LELongField,
 )
-import six
 
 
 class ENCODED_STRING8(Packet):
@@ -683,9 +682,7 @@ class INSTANCE_TYPE(Packet):
         octetCount = (len(properties) - 1) // 4 + 1  # see [MS-WMIO]: 2.2.26 NdTable
         packedNdTable = self.NdTable_ValueTable[:octetCount]
         unpackedNdTable = [
-            (byte >> shift) & 0b11
-            for byte in six.iterbytes(packedNdTable)
-            for shift in (0, 2, 4, 6)
+            (byte >> shift) & 0b11 for byte in packedNdTable for shift in (0, 2, 4, 6)
         ]
         for key in properties:
             ndEntry = unpackedNdTable[properties[key]["order"]]
