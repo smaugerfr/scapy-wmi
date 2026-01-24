@@ -24,11 +24,10 @@ from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 from scapy_wmi.types.wmi_classes import WMI_Class
 
 # TODO
+# Fix parse MS-WMIO query SELECT * FROM meta_class
+# Fix ExecQuery with SSP Kerberos
 # SSPNEGO, fix two ssp
 # Implement class, filter
-# Deal with release, it doesnt work on unmarshalled obj
-# solve six problem
-
 
 class WMI_Client(DCOM_Client):
     auth_level: DCE_C_AUTHN_LEVEL
@@ -44,6 +43,15 @@ class WMI_Client(DCOM_Client):
         )
 
     def get_namespace(self, namespace_str: str = "root/cimv2") -> ObjectInstance:
+        """
+        Don"t forget to release after usage
+        
+        :param self: Description
+        :param namespace_str: Description
+        :type namespace_str: str
+        :return: Description
+        :rtype: ObjectInstance
+        """
         CLSID_WbemLevel1Login = uuid.UUID("8BC3F05E-D86B-11D0-A075-00C04FB68820")
         IID_IWbemLevel1Login = find_com_interface("IWbemLevel1Login")
 
@@ -386,6 +394,9 @@ class wmiclient(CLIUtil):
             objref_wmi = self.client.get_namespace(parent_namespace.strip("/"))
         ppEnum = self.client.query("SELECT * FROM __Namespace", objref_wmi)
         ns_interfaces = self.client.get_query_result_object(ppEnum)
+        ppEnum.release() 
+        if parent_namespace.strip("/") != self.current_namescape:
+            objref_wmi.release() 
         names = []
         for elt in ns_interfaces:
             names.append(parent_namespace + elt.Name["value"])
@@ -393,7 +404,9 @@ class wmiclient(CLIUtil):
 
     @CLIUtil.addcommand()
     def namespace(self, namespace: str):
-        self.objref_wmi = self.client.get_namespace(namespace)
+        new_namespace = self.client.get_namespace(namespace)
+        self.objref_wmi.release()
+        self.objref_wmi = new_namespace
         self.current_namescape = namespace
         print("Switched to " + namespace)
 
@@ -403,3 +416,43 @@ class wmiclient(CLIUtil):
             return self._list_namespaces(namespace)
         else:
             return ["root/"]
+        
+    def _list_class(self, namespace: str):
+        objref_wmi: ObjectInstance
+        if namespace.strip("/") == self.current_namescape:
+            objref_wmi = self.objref_wmi
+        else:
+            objref_wmi = self.client.get_namespace(namespace.strip("/"))
+        ppEnum = self.client.query("SELECT * FROM meta_class", objref_wmi)
+        class_interfaces = self.client.get_query_result_object(ppEnum)
+        ppEnum.release()
+        return class_interfaces
+
+    @CLIUtil.addcommand()
+    def list(self):
+        return self._list_class(self.current_namescape)
+    
+    @CLIUtil.addoutput(list)
+    def list_output(self, interfaces):
+        for interface in interfaces:
+            obj_ = OBJREF(interface.abData)
+            # Do thing to get properties
+            encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
+            objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
+            objBlk.parseObject()
+            record = objBlk.ctCurrent.properties
+            # Get padding, get the longer title
+            pad_len = 0
+            for col in record:
+                if len(col) > pad_len:
+                    pad_len = len(col)
+            # Display
+            for key in record:
+                print(f"{key}{" " * (pad_len - len(key))}: ", end="")
+                if type(record[key]["value"]) is list:
+                    for item in record[key]["value"]:
+                        print(item, end=", ")
+                    print()
+                else:
+                    print("%s" % record[key]["value"])
+            print()
