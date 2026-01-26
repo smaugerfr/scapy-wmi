@@ -22,6 +22,7 @@ from scapy.fields import (
     LESignedIntField,
     LESignedLongField,
     LELongField,
+    ThreeBytesField
 )
 
 
@@ -75,6 +76,13 @@ class ENCODED_STRING(Packet):
         else:
             return len(p.value) + 1 + 1  # Flag len + Null byte
 
+
+WBEM_FLAVOR_FLAG_PROPAGATE_O_INSTANCE      = 0x01
+WBEM_FLAVOR_FLAG_PROPAGATE_O_DERIVED_CLASS = 0x02
+WBEM_FLAVOR_NOT_OVERRIDABLE                = 0x10
+WBEM_FLAVOR_ORIGIN_PROPAGATED              = 0x20
+WBEM_FLAVOR_ORIGIN_SYSTEM                  = 0x40
+WBEM_FLAVOR_AMENDED                        = 0x80
 
 # 2.2.32 Inherited
 Inherited = 0x4000
@@ -568,7 +576,30 @@ class CLASS_PART(Packet):
         rest = s[remaining:]
         return garbage, rest
 
+# 2.2.41 MethodDescription
+class METHOD_DESCRIPTION(Packet):
+    MethodName: int
+    MethodFlags: int
+    MethodPadding0: int
+    MethodOrigin: int
+    MethodQualifiers: int
+    InputSignature: int
+    OutputSignature: int
+    
+    fields_desc = [
+        LEIntField("MethodName", None),
+        ByteField("MethodFlags", None),
+        ByteField("MethodPadding0", None),
+        ByteField("MethodPadding1", None),
+        ByteField("MethodPadding2", None),
+        LEIntField("MethodOrigin", None),
+        LEIntField("MethodQualifiers", None),
+        LEIntField("InputSignature", None),
+        LEIntField("OutputSignature", None),
+    ]
 
+    def extract_padding(self, s):
+        return b"", s
 # 2.2.38 MethodsPart
 class METHODS_PART(Packet):
     name = "MethodsPart"
@@ -581,10 +612,51 @@ class METHODS_PART(Packet):
         LEIntField("EncodingLength", None),
         LEShortField("MethodCount", None),
         LEShortField("MethodCountPadding", None),
-        StrLenField("MethodDescription", b"", length_from=lambda pkt: pkt.MethodCount),
+        StrLenField("MethodDescription", b"", length_from=lambda pkt: pkt.MethodCount*24),
         PacketField("MethodHeap", None, CLASS_HEAP),
     ]
-    # TODO: NOT FINISHED
+
+    def extract_padding(self, s):
+        return b"", s
+    
+    def getMethods(self):
+        methods = OrderedDict()
+        data = self.MethodDescription
+        heap = self.MethodHeap.HeapItem
+
+        for method in range(self.MethodCount):
+            methodDict = OrderedDict()
+            itemn: METHOD_DESCRIPTION = METHOD_DESCRIPTION(data)
+            if itemn.MethodFlags & WBEM_FLAVOR_ORIGIN_PROPAGATED:
+                # TODO
+                # raise ValueError("WBEM_FLAVOR_ORIGIN_PROPAGATED not yet supported!")
+                continue
+            methodDict['name'] = ENCODED_STRING(heap[itemn.MethodName:]).str_value()
+            methodDict['origin'] = itemn.MethodOrigin
+            if itemn.MethodQualifiers != 0xffffffff:
+                # There are qualifiers
+                qualifiersSet: QUALIFIER_SET = QUALIFIER_SET(heap[itemn.MethodQualifiers:])
+                qualifiers = qualifiersSet.getQualifiers(heap)
+                methodDict['qualifiers'] = qualifiers
+            if itemn.InputSignature != 0xffffffff:
+                inputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(heap[itemn.InputSignature:])
+                if inputSignature.EncodingLength > 0:
+                    methodDict['InParams'] = inputSignature.ObjectBlock.ClassType.CurrentClass.getProperties()
+                    methodDict['InParamsRaw'] = inputSignature.ObjectBlock
+                    #print methodDict['InParams'] 
+                else:
+                    methodDict['InParams'] = None
+            if itemn.OutputSignature != 0xffffffff:
+                outputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(heap[itemn.OutputSignature:])
+                if outputSignature.EncodingLength > 0:
+                    methodDict['OutParams'] = outputSignature.ObjectBlock.ClassType.CurrentClass.getProperties()
+                    methodDict['OutParamsRaw'] = outputSignature.ObjectBlock
+                else:
+                    methodDict['OutParams'] = None
+            data = data[24:]
+            methods[methodDict['name']] = methodDict
+
+        return methods
 
 
 # 2.2.14 ClassAndMethodsPart
@@ -596,6 +668,9 @@ class CLASS_AND_METHODS_PART(Packet):
         PacketField("ClassPart", None, CLASS_PART),
         PacketField("MethodsPart", None, METHODS_PART),
     ]
+
+    def extract_padding(self, s):
+        return b"", s
 
     def getClassName(self) -> str:
         pClassName = self.ClassPart.ClassHeader.ClassNameRef
@@ -616,6 +691,9 @@ class CLASS_AND_METHODS_PART(Packet):
 
     def getProperties(self):
         return self.ClassPart.getProperties()
+    
+    def getMethods(self):
+        return self.MethodsPart.getMethods()
 
 
 class CURRENT_CLASS_NO_METHODS(CLASS_AND_METHODS_PART):
@@ -731,6 +809,14 @@ class INSTANCE_TYPE(Packet):
     def extract_padding(self, s):
         return b"", s
 
+class CLASS_TYPE(Packet):
+    ParentClass: CLASS_AND_METHODS_PART
+    CurrentClass: CLASS_AND_METHODS_PART
+    fields_desc = [
+        PacketField("ParentClass", None, CLASS_AND_METHODS_PART),
+        PacketField("CurrentClass", None, CLASS_AND_METHODS_PART)
+    ]
+
 
 # 2.2.5 ObjectBlock
 class OBJECT_BLOCK(Packet):
@@ -738,26 +824,33 @@ class OBJECT_BLOCK(Packet):
     ObjectFlags: int
     Decoration: Optional[DECORATION]
     InstanceType: INSTANCE_TYPE
+    ClassType: CLASS_TYPE
     fields_desc = [
         ByteField("ObjectFlags", None),
         ConditionalField(  # This block MUST be present if the ObjectFlags (section 2.2.6) octet has 0x04 bit flag set; otherwise, it MUST be omitted.
             PacketField("Decoration", None, DECORATION), lambda p: p.ObjectFlags & 0x04
         ),
-        PacketField("InstanceType", None, INSTANCE_TYPE),
+        ConditionalField(
+            PacketField("InstanceType", None, INSTANCE_TYPE), lambda p: p.ObjectFlags & 0x02
+        ),
+        ConditionalField(
+            PacketField("ClassType", None, CLASS_TYPE), lambda p: p.ObjectFlags & 0x01
+        ),
     ]
 
     def extract_padding(self, s):
         return b"", s
 
     def parseObject(self):
-        if (self.ObjectFlags & 0x01) == 0:
-            # instance
+        if self.ObjectFlags & 0x02:
+            # The object is a CIM instance
             ctCurrent: CLASS_AND_METHODS_PART = self.InstanceType.CurrentClass
             currentName = ctCurrent.getClassName()
             if currentName is not None:
                 self.ctCurrent = self.parseClass(ctCurrent, self.InstanceType)
             return
         else:
+            # The object is a CIM class
             ctParent: CLASS_AND_METHODS_PART = self.ClassType.ParentClass
             ctCurrent: CLASS_AND_METHODS_PART = self.ClassType.CurrentClass
 
@@ -773,12 +866,13 @@ class OBJECT_BLOCK(Packet):
         self, pClass: CLASS_AND_METHODS_PART, cInstance: INSTANCE_TYPE = None
     ):
         classDict = OrderedDict()
-        classDict.name = pClass.getClassName()
-        classDict.qualifiers = pClass.getQualifiers()
-        classDict.properties = pClass.getProperties()
-        classDict.methods = pClass.getMethods()
+        classDict["name"] = pClass.getClassName()
+        classDict["qualifiers"] = pClass.getQualifiers()
+        classDict["properties"] = pClass.getProperties()
+        classDict["methods"] = pClass.getMethods()
+
         if cInstance is not None:
-            classDict["values"] = cInstance.getValues(classDict.properties)
+            classDict["values"] = cInstance.getValues(classDict["properties"])
         else:
             classDict["values"] = None
 
@@ -891,15 +985,15 @@ class OBJECT_BLOCK(Packet):
         print("}")
 
     def printInformation(self):
-        # First off, do we have a class?
-        if (self.ObjectFlags & 0x01) == 0:
-            # instance
+        if self.ObjectFlags & 0x02:
+            # The object is a CIM instance
             ctCurrent: CLASS_AND_METHODS_PART = self.InstanceType.CurrentClass
             currentName = ctCurrent.getClassName()
             if currentName is not None:
                 self.printClass(ctCurrent, self.InstanceType)
             return
         else:
+            # The object is a CIM class
             ctParent: CLASS_AND_METHODS_PART = self.ClassType.ParentClass
             ctCurrent: CLASS_AND_METHODS_PART = self.ClassType.CurrentClass
 
@@ -916,6 +1010,7 @@ class OBJECT_BLOCK(Packet):
 class METHOD_SIGNATURE_BLOCK(Packet):
     name = "MethodSignatureBlock"
     EncodingLength: int
+    ObjectBlock: OBJECT_BLOCK
     fields_desc = [
         LEIntField("EncodingLength", None),  # 2.2.73 EncodingLength
         ConditionalField(

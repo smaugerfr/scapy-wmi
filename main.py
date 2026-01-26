@@ -14,21 +14,21 @@ if TYPE_CHECKING:
     from scapy_wmi.wmiclient import wmiclient
 
 if __name__ == "__main__":
-    load_module("ticketer")
-    t = Ticketer()
+    ntlmssp = NTLMSSP(UPN="Administrator", PASSWORD="StrongPa55!")
+    # load_module("ticketer")
+    # t = Ticketer()
     # t.request_tgt("GREP7\Administrator", ip='192.168.100.100', password="StrongPa55!")
     # t.request_st(0, "HOST/WIN-8K15VKV24SG", ip="192.168.100.100")
     # t.save_ccache("ticket", 1)
-    t.open_ccache("ticket")
-    t.show()
+    # t.open_ccache("ticket")
+    # t.show()
 
-    ntlmssp = NTLMSSP(UPN="Administrator", PASSWORD="StrongPa55!")
-    ssp = SPNEGOSSP([
-        # ntlmssp,
-        t.ssp(0)
-    ])
+    # ssp = SPNEGOSSP([
+    #     # ntlmssp,
+    #     t.ssp(0)
+    # ])
 
-    wmiclient("192.168.100.100", ssp=ssp, debug=1, REQUIRE_ENCRYPTION=True)
+    wmiclient("192.168.100.100", ssp=ntlmssp, debug=0, REQUIRE_ENCRYPTION=True)
 
     # client = WMI_Client(ntlmssp, DCE_C_AUTHN_LEVEL.PKT_INTEGRITY, verb=False)
     # client.connect("192.168.100.100")

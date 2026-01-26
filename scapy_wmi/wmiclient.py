@@ -424,7 +424,7 @@ class wmiclient(CLIUtil):
         else:
             objref_wmi = self.client.get_namespace(namespace.strip("/"))
         ppEnum = self.client.query("SELECT * FROM meta_class", objref_wmi)
-        class_interfaces = self.client.get_query_result_object(ppEnum)
+        class_interfaces = self.client.get_query_result(ppEnum)
         ppEnum.release()
         return class_interfaces
 
@@ -440,19 +440,4 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            record = objBlk.ctCurrent.properties
-            # Get padding, get the longer title
-            pad_len = 0
-            for col in record:
-                if len(col) > pad_len:
-                    pad_len = len(col)
-            # Display
-            for key in record:
-                print(f"{key}{" " * (pad_len - len(key))}: ", end="")
-                if type(record[key]["value"]) is list:
-                    for item in record[key]["value"]:
-                        print(item, end=", ")
-                    print()
-                else:
-                    print("%s" % record[key]["value"])
-            print()
+            print(objBlk.ctCurrent["name"].split(" : ")[0])
