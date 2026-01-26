@@ -320,6 +320,19 @@ class wmiclient(CLIUtil):
         interfaces = self.client.get_query_result(ppEnum)
         ppEnum.release()
         return interfaces
+    
+    @CLIUtil.addcomplete(query)
+    def query_complete(self, raw_query: str) -> list:
+        if "FROM " in raw_query:
+            cache = self.classes_cache.get(self.current_namescape)
+            if cache is not None:
+                split_query = raw_query.split("FROM ")
+                return [split_query[0]+"FROM "+elt for elt in cache.keys() if elt.startswith(split_query[-1])]
+            else:
+                return []
+        else:
+            return []
+
 
     @CLIUtil.addoutput(query)
     def query_output(self, interfaces):
@@ -428,8 +441,10 @@ class wmiclient(CLIUtil):
     def namespace_complete(self, namespace: str) -> list:
         if namespace.endswith("/") and namespace.startswith("root/"):
             return self._list_namespaces(namespace)
-        else:
+        elif not namespace.startswith("root"):
             return ["root/"]
+        else:
+            return self._list_namespaces("/".join(namespace.split("/")[:-1])+"/")
 
     def _list_class(self, namespace: str):
         objref_wmi: ObjectInstance
@@ -446,6 +461,12 @@ class wmiclient(CLIUtil):
     def list(self):
         return self._list_class(self.current_namescape)
 
+    def _update_class_cache(self, classname: str, objBlk: OBJECT_BLOCK):
+        if not self.classes_cache.__contains__(self.current_namescape):
+            self.classes_cache[self.current_namescape] = dict(classname=objBlk)
+        else:
+            self.classes_cache[self.current_namescape][classname] = objBlk
+
     @CLIUtil.addoutput(list)
     def list_output(self, interfaces):
         import textwrap
@@ -459,6 +480,7 @@ class wmiclient(CLIUtil):
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
             name = objBlk.ctCurrent["name"].split(" : ")[0]
+            self._update_class_cache(name, objBlk)
             methods = objBlk.ctCurrent["methods"].keys()
             properties = objBlk.ctCurrent["properties"].keys()
             print(
