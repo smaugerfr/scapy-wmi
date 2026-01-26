@@ -214,7 +214,7 @@ class WMI_Client(DCOM_Client):
                             )
                             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
                             objBlk.parseObject()
-                            record = objBlk.ctCurrent.properties
+                            record = objBlk.ctCurrent["properties"]
                             objects.append(WMI_Class(record))
         return objects
 
@@ -246,6 +246,8 @@ class wmiclient(CLIUtil):
 
     client: WMI_Client
     objref_wmi: ObjectInstance
+    namespace_cache: dict[str, list[str]]
+    classes_cache: dict[str, dict[str, OBJECT_BLOCK]]
 
     def __init__(
         self,
@@ -292,6 +294,8 @@ class wmiclient(CLIUtil):
         if REQUIRE_ENCRYPTION:
             auth_level = DCE_C_AUTHN_LEVEL.PKT_PRIVACY
 
+        self.namespace_cache = dict()
+        self.classes_cache = dict()
         # Create connection
         self.client = WMI_Client(ssp=ssp, auth_level=auth_level, verb=bool(debug))
         self.client.connect(target, timeout)
@@ -391,19 +395,25 @@ class wmiclient(CLIUtil):
         return stripped + "\0"
 
     def _list_namespaces(self, parent_namespace: str) -> list:
+        stripped_namespace = parent_namespace.strip("/")
+        from_cache = self.namespace_cache.get(stripped_namespace)
+        if from_cache is not None:
+            return from_cache
+
         objref_wmi: ObjectInstance
-        if parent_namespace.strip("/") == self.current_namescape:
+        if stripped_namespace == self.current_namescape:
             objref_wmi = self.objref_wmi
         else:
-            objref_wmi = self.client.get_namespace(parent_namespace.strip("/"))
+            objref_wmi = self.client.get_namespace(stripped_namespace)
         ppEnum = self.client.query("SELECT * FROM __Namespace", objref_wmi)
         ns_interfaces = self.client.get_query_result_object(ppEnum)
         ppEnum.release()
-        if parent_namespace.strip("/") != self.current_namescape:
+        if stripped_namespace != self.current_namescape:
             objref_wmi.release()
         names = []
         for elt in ns_interfaces:
             names.append(parent_namespace + elt.Name["value"])
+        self.namespace_cache[stripped_namespace] = names
         return names
 
     @CLIUtil.addcommand()
@@ -454,5 +464,5 @@ class wmiclient(CLIUtil):
             print(
                 f"{name[:31] + "..." if len(name) > 34 else name:<34}",
                 f"{"{"+textwrap.shorten(", ".join(methods), 34, placeholder="...", break_long_words=True)+"}":<34}",
-                f"{"{"+textwrap.shorten(", ".join(properties), 34, placeholder="...", break_long_words=True)+"}":<34}"
+                f"{"{"+textwrap.shorten(", ".join(properties), 34, placeholder="...", break_long_words=True)+"}":<34}",
             )
