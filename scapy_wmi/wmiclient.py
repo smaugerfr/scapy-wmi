@@ -24,10 +24,14 @@ from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 from scapy_wmi.types.wmi_classes import WMI_Class
 
 # TODO
-# Fix parse MS-WMIO query SELECT * FROM meta_class
+# Implement cache namespace
+# Implement cache list class
+# Implement complete class
+# Implement shell
 # Fix ExecQuery with SSP Kerberos
 # SSPNEGO, fix two ssp
 # Implement class, filter
+
 
 class WMI_Client(DCOM_Client):
     auth_level: DCE_C_AUTHN_LEVEL
@@ -45,7 +49,7 @@ class WMI_Client(DCOM_Client):
     def get_namespace(self, namespace_str: str = "root/cimv2") -> ObjectInstance:
         """
         Don"t forget to release after usage
-        
+
         :param self: Description
         :param namespace_str: Description
         :type namespace_str: str
@@ -394,9 +398,9 @@ class wmiclient(CLIUtil):
             objref_wmi = self.client.get_namespace(parent_namespace.strip("/"))
         ppEnum = self.client.query("SELECT * FROM __Namespace", objref_wmi)
         ns_interfaces = self.client.get_query_result_object(ppEnum)
-        ppEnum.release() 
+        ppEnum.release()
         if parent_namespace.strip("/") != self.current_namescape:
-            objref_wmi.release() 
+            objref_wmi.release()
         names = []
         for elt in ns_interfaces:
             names.append(parent_namespace + elt.Name["value"])
@@ -416,7 +420,7 @@ class wmiclient(CLIUtil):
             return self._list_namespaces(namespace)
         else:
             return ["root/"]
-        
+
     def _list_class(self, namespace: str):
         objref_wmi: ObjectInstance
         if namespace.strip("/") == self.current_namescape:
@@ -431,13 +435,24 @@ class wmiclient(CLIUtil):
     @CLIUtil.addcommand()
     def list(self):
         return self._list_class(self.current_namescape)
-    
+
     @CLIUtil.addoutput(list)
     def list_output(self, interfaces):
+        import textwrap
+
+        print(f"{"Name":<34}{"Methods":<34}{"Properties":<34}")
+        print(f"{"----":<34}{"-------":<34}{"----------":<34}")
         for interface in interfaces:
             obj_ = OBJREF(interface.abData)
             # Do thing to get properties
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            print(objBlk.ctCurrent["name"].split(" : ")[0])
+            name = objBlk.ctCurrent["name"].split(" : ")[0]
+            methods = objBlk.ctCurrent["methods"].keys()
+            properties = objBlk.ctCurrent["properties"].keys()
+            print(
+                f"{name[:31] + "..." if len(name) > 34 else name:<34}",
+                f"{"{"+textwrap.shorten(", ".join(methods), 34, placeholder="...", break_long_words=True)+"}":<34}",
+                f"{"{"+textwrap.shorten(", ".join(properties), 34, placeholder="...", break_long_words=True)+"}":<34}"
+            )
