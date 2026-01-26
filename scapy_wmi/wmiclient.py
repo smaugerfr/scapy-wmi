@@ -320,19 +320,22 @@ class wmiclient(CLIUtil):
         interfaces = self.client.get_query_result(ppEnum)
         ppEnum.release()
         return interfaces
-    
+
     @CLIUtil.addcomplete(query)
     def query_complete(self, raw_query: str) -> list:
         if "FROM " in raw_query:
             cache = self.classes_cache.get(self.current_namescape)
             if cache is not None:
                 split_query = raw_query.split("FROM ")
-                return [split_query[0]+"FROM "+elt for elt in cache.keys() if elt.startswith(split_query[-1])]
+                return [
+                    split_query[0] + "FROM " + elt
+                    for elt in cache.keys()
+                    if elt.startswith(split_query[-1])
+                ]
             else:
                 return []
         else:
             return []
-
 
     @CLIUtil.addoutput(query)
     def query_output(self, interfaces):
@@ -342,7 +345,7 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            record = objBlk.ctCurrent.properties
+            record = objBlk.ctCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
             for col in record:
@@ -376,7 +379,7 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            record = objBlk.ctCurrent.properties
+            record = objBlk.ctCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
             for col in record:
@@ -444,7 +447,7 @@ class wmiclient(CLIUtil):
         elif not namespace.startswith("root"):
             return ["root/"]
         else:
-            return self._list_namespaces("/".join(namespace.split("/")[:-1])+"/")
+            return self._list_namespaces("/".join(namespace.split("/")[:-1]) + "/")
 
     def _list_class(self, namespace: str):
         objref_wmi: ObjectInstance
