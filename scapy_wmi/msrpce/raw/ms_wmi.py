@@ -165,7 +165,11 @@ class GetObject_Request(NDRPacket):
             NDRPacketField("strObjectPath", FLAGGED_WORD_BLOB(), FLAGGED_WORD_BLOB)
         ),
         NDRSignedIntField("lFlags", 0),
-        NDRPacketField("pCtx", MInterfacePointer(), MInterfacePointer),
+        NDRFullPointerField(
+            NDRFullPointerField(
+                NDRPacketField("pCtx", MInterfacePointer(), MInterfacePointer),
+            )
+        ),
         NDRFullPointerField(
             NDRFullPointerField(
                 NDRPacketField("ppObject", MInterfacePointer(), MInterfacePointer)

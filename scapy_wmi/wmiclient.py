@@ -19,14 +19,13 @@ from scapy_wmi.msrpce.raw.ms_wmi import (
     ExecQuery_Response,
     IENUMWBEMCLASSOBJECT_OPNUMS,
     MInterfacePointer,
+    GetObject_Request,
+    GetObject_Response,
 )
 from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 from scapy_wmi.types.wmi_classes import WMI_Class
 
 # TODO
-# Implement cache namespace
-# Implement cache list class
-# Implement complete class
 # Implement shell
 # Fix ExecQuery with SSP Kerberos
 # SSPNEGO, fix two ssp
@@ -127,6 +126,57 @@ class WMI_Client(DCOM_Client):
         # Unmarshall
         ppEnum_value: MInterfacePointer = (
             result_query.ppEnum.value
+        )  # IEnumWbemClassObject
+        obj_ppEnum = self.UnmarshallObjectReference(
+            ppEnum_value,
+            iid=find_com_interface("IEnumWbemClassObject"),
+        )
+
+        return obj_ppEnum
+
+    def getObject(
+        self, objectPath: str, objref_wmi: ObjectInstance | None = None
+    ) -> ObjectInstance:
+        null_val_ptr = MInterfacePointer(max_count=0, ulCntData=0)
+        pktctr = GetObject_Request(
+            strObjectPath=NDRPointer(
+                referent_id=0x72657355,
+                value=FLAGGED_WORD_BLOB(
+                    max_count=len(objectPath),
+                    cBytes=len(objectPath) * 2,
+                    clSize=len(objectPath),
+                    asData=objectPath.encode("utf-16le"),
+                ),
+            ),
+            # lFlags=0x00000010,
+            pCtx=NDRPointer(
+                referent_id=0,
+                value=NDRPointer(referent_id=0x72657355, value=null_val_ptr),
+            ),
+            # pCtx=MInterfacePointer(max_count=0, ulCntData=0x10101010),
+        )
+        # res = pktctr.pCtx.do_build()
+        # print(bytes.hex(res))
+        # exit()
+        if objref_wmi is None:
+            objref_wmi = self.current_namespace
+
+        result_query = objref_wmi.sr1_req(
+            pkt=pktctr,
+            iface=find_com_interface("IWbemServices"),
+            auth_level=self.auth_level,
+        )
+
+        if not isinstance(result_query, GetObject_Response):
+            result_query.show()
+            raise ValueError("GetObject failed !")
+
+        if result_query.ppObject is None:
+            raise ValueError("Returned object pointer is NULL")
+
+        # Unmarshall
+        ppEnum_value: MInterfacePointer = (
+            result_query.ppObject.value.value
         )  # IEnumWbemClassObject
         obj_ppEnum = self.UnmarshallObjectReference(
             ppEnum_value,
