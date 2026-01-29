@@ -19,15 +19,18 @@ from scapy_wmi.msrpce.raw.ms_wmi import (
     ExecQuery_Response,
     IENUMWBEMCLASSOBJECT_OPNUMS,
     MInterfacePointer,
+    GetObject_Request,
+    GetObject_Response,
 )
 from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 from scapy_wmi.types.wmi_classes import WMI_Class
 
 # TODO
-# Fix parse MS-WMIO query SELECT * FROM meta_class
+# Implement shell
 # Fix ExecQuery with SSP Kerberos
 # SSPNEGO, fix two ssp
 # Implement class, filter
+
 
 class WMI_Client(DCOM_Client):
     auth_level: DCE_C_AUTHN_LEVEL
@@ -45,7 +48,7 @@ class WMI_Client(DCOM_Client):
     def get_namespace(self, namespace_str: str = "root/cimv2") -> ObjectInstance:
         """
         Don"t forget to release after usage
-        
+
         :param self: Description
         :param namespace_str: Description
         :type namespace_str: str
@@ -131,6 +134,51 @@ class WMI_Client(DCOM_Client):
 
         return obj_ppEnum
 
+    def getObject(
+        self, objectPath: str, objref_wmi: ObjectInstance | None = None
+    ) -> OBJREF:
+        null_val_ptr = MInterfacePointer(max_count=0, ulCntData=0)
+        pktctr = GetObject_Request(
+            strObjectPath=NDRPointer(
+                referent_id=0x72657355,
+                value=FLAGGED_WORD_BLOB(
+                    max_count=len(objectPath),
+                    cBytes=len(objectPath) * 2,
+                    clSize=len(objectPath),
+                    asData=objectPath.encode("utf-16le"),
+                ),
+            ),
+            # lFlags=0x00000010,
+            pCtx=NDRPointer(
+                referent_id=0,
+                value=NDRPointer(referent_id=0x72657355, value=null_val_ptr),
+            ),
+        )
+
+        if objref_wmi is None:
+            objref_wmi = self.current_namespace
+
+        result_query = objref_wmi.sr1_req(
+            pkt=pktctr,
+            iface=find_com_interface("IWbemServices"),
+            auth_level=self.auth_level,
+        )
+
+        if not isinstance(result_query, GetObject_Response):
+            result_query.show()
+            raise ValueError("GetObject failed !")
+
+        if result_query.ppObject is None:
+            raise ValueError("Returned object pointer is NULL")
+
+        ppEnum_value: MInterfacePointer = (
+            result_query.ppObject.value.value
+        ) 
+
+        obj_ = OBJREF(ppEnum_value.abData)
+
+        return obj_
+
     def get_query_result(self, obj_ppEnum: ObjectInstance) -> list[MInterfacePointer]:
         op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
         req_cls = op.request
@@ -210,7 +258,7 @@ class WMI_Client(DCOM_Client):
                             )
                             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
                             objBlk.parseObject()
-                            record = objBlk.ctCurrent.properties
+                            record = objBlk.ctCurrent["properties"]
                             objects.append(WMI_Class(record))
         return objects
 
@@ -242,6 +290,8 @@ class wmiclient(CLIUtil):
 
     client: WMI_Client
     objref_wmi: ObjectInstance
+    namespace_cache: dict[str, list[str]]
+    classes_cache: dict[str, dict[str, OBJECT_BLOCK]]
 
     def __init__(
         self,
@@ -288,6 +338,8 @@ class wmiclient(CLIUtil):
         if REQUIRE_ENCRYPTION:
             auth_level = DCE_C_AUTHN_LEVEL.PKT_PRIVACY
 
+        self.namespace_cache = dict()
+        self.classes_cache = dict()
         # Create connection
         self.client = WMI_Client(ssp=ssp, auth_level=auth_level, verb=bool(debug))
         self.client.connect(target, timeout)
@@ -313,6 +365,22 @@ class wmiclient(CLIUtil):
         ppEnum.release()
         return interfaces
 
+    @CLIUtil.addcomplete(query)
+    def query_complete(self, raw_query: str) -> list:
+        if "FROM " in raw_query:
+            cache = self.classes_cache.get(self.current_namescape)
+            if cache is not None:
+                split_query = raw_query.split("FROM ")
+                return [
+                    split_query[0] + "FROM " + elt
+                    for elt in cache.keys()
+                    if elt.startswith(split_query[-1])
+                ]
+            else:
+                return []
+        else:
+            return []
+
     @CLIUtil.addoutput(query)
     def query_output(self, interfaces):
         for interface in interfaces:
@@ -321,7 +389,7 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            record = objBlk.ctCurrent.properties
+            record = objBlk.ctCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
             for col in record:
@@ -355,7 +423,7 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            record = objBlk.ctCurrent.properties
+            record = objBlk.ctCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
             for col in record:
@@ -387,19 +455,25 @@ class wmiclient(CLIUtil):
         return stripped + "\0"
 
     def _list_namespaces(self, parent_namespace: str) -> list:
+        stripped_namespace = parent_namespace.strip("/")
+        from_cache = self.namespace_cache.get(stripped_namespace)
+        if from_cache is not None:
+            return from_cache
+
         objref_wmi: ObjectInstance
-        if parent_namespace.strip("/") == self.current_namescape:
+        if stripped_namespace == self.current_namescape:
             objref_wmi = self.objref_wmi
         else:
-            objref_wmi = self.client.get_namespace(parent_namespace.strip("/"))
+            objref_wmi = self.client.get_namespace(stripped_namespace)
         ppEnum = self.client.query("SELECT * FROM __Namespace", objref_wmi)
         ns_interfaces = self.client.get_query_result_object(ppEnum)
-        ppEnum.release() 
-        if parent_namespace.strip("/") != self.current_namescape:
-            objref_wmi.release() 
+        ppEnum.release()
+        if stripped_namespace != self.current_namescape:
+            objref_wmi.release()
         names = []
         for elt in ns_interfaces:
             names.append(parent_namespace + elt.Name["value"])
+        self.namespace_cache[stripped_namespace] = names
         return names
 
     @CLIUtil.addcommand()
@@ -414,9 +488,11 @@ class wmiclient(CLIUtil):
     def namespace_complete(self, namespace: str) -> list:
         if namespace.endswith("/") and namespace.startswith("root/"):
             return self._list_namespaces(namespace)
-        else:
+        elif not namespace.startswith("root"):
             return ["root/"]
-        
+        else:
+            return self._list_namespaces("/".join(namespace.split("/")[:-1]) + "/")
+
     def _list_class(self, namespace: str):
         objref_wmi: ObjectInstance
         if namespace.strip("/") == self.current_namescape:
@@ -431,13 +507,31 @@ class wmiclient(CLIUtil):
     @CLIUtil.addcommand()
     def list(self):
         return self._list_class(self.current_namescape)
-    
+
+    def _update_class_cache(self, classname: str, objBlk: OBJECT_BLOCK):
+        if not self.classes_cache.__contains__(self.current_namescape):
+            self.classes_cache[self.current_namescape] = dict(classname=objBlk)
+        else:
+            self.classes_cache[self.current_namescape][classname] = objBlk
+
     @CLIUtil.addoutput(list)
     def list_output(self, interfaces):
+        import textwrap
+
+        print(f"{"Name":<34}{"Methods":<34}{"Properties":<34}")
+        print(f"{"----":<34}{"-------":<34}{"----------":<34}")
         for interface in interfaces:
             obj_ = OBJREF(interface.abData)
             # Do thing to get properties
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            print(objBlk.ctCurrent["name"].split(" : ")[0])
+            name = objBlk.ctCurrent["name"].split(" : ")[0]
+            self._update_class_cache(name, objBlk)
+            methods = objBlk.ctCurrent["methods"].keys()
+            properties = objBlk.ctCurrent["properties"].keys()
+            print(
+                f"{name[:31] + "..." if len(name) > 34 else name:<34}",
+                f"{"{"+textwrap.shorten(", ".join(methods), 34, placeholder="...", break_long_words=True)+"}":<34}",
+                f"{"{"+textwrap.shorten(", ".join(properties), 34, placeholder="...", break_long_words=True)+"}":<34}",
+            )
