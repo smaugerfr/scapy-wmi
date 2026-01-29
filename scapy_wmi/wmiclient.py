@@ -171,10 +171,9 @@ class WMI_Client(DCOM_Client):
         if result_query.ppObject is None:
             raise ValueError("Returned object pointer is NULL")
 
-        # Unmarshall
         ppEnum_value: MInterfacePointer = (
             result_query.ppObject.value.value
-        )  # IEnumWbemClassObject
+        ) 
 
         obj_ = OBJREF(ppEnum_value.abData)
 
