@@ -136,7 +136,7 @@ class WMI_Client(DCOM_Client):
 
     def getObject(
         self, objectPath: str, objref_wmi: ObjectInstance | None = None
-    ) -> ObjectInstance:
+    ) -> OBJREF:
         null_val_ptr = MInterfacePointer(max_count=0, ulCntData=0)
         pktctr = GetObject_Request(
             strObjectPath=NDRPointer(
@@ -153,11 +153,8 @@ class WMI_Client(DCOM_Client):
                 referent_id=0,
                 value=NDRPointer(referent_id=0x72657355, value=null_val_ptr),
             ),
-            # pCtx=MInterfacePointer(max_count=0, ulCntData=0x10101010),
         )
-        # res = pktctr.pCtx.do_build()
-        # print(bytes.hex(res))
-        # exit()
+
         if objref_wmi is None:
             objref_wmi = self.current_namespace
 
@@ -178,12 +175,10 @@ class WMI_Client(DCOM_Client):
         ppEnum_value: MInterfacePointer = (
             result_query.ppObject.value.value
         )  # IEnumWbemClassObject
-        obj_ppEnum = self.UnmarshallObjectReference(
-            ppEnum_value,
-            iid=find_com_interface("IEnumWbemClassObject"),
-        )
 
-        return obj_ppEnum
+        obj_ = OBJREF(ppEnum_value.abData)
+
+        return obj_
 
     def get_query_result(self, obj_ppEnum: ObjectInstance) -> list[MInterfacePointer]:
         op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
