@@ -1,4 +1,6 @@
 from scapy.config import conf
+
+from scapy_wmi.wmiclient import IWbemClassObject
 conf.load_extensions.append("scapy-wmi")
 conf.exts.loadall()
 from scapy.layers.ntlm import NTLMSSP
@@ -28,8 +30,14 @@ if __name__ == "__main__":
     #     t.ssp(0)
     # ])
 
-    wmiclient("192.168.100.100", ssp=ntlmssp, debug=0, REQUIRE_ENCRYPTION=True)
-
+    # wmiclient("192.168.100.100", ssp=ntlmssp, debug=0, REQUIRE_ENCRYPTION=True)
+    cli = wmiclient("192.168.100.100", ssp=ntlmssp, debug=0, REQUIRE_ENCRYPTION=False, cli=False)
+    ptr = cli.client.getObject("Win32_Process", cli.objref_wmi)
+    IWbemClassObject(ptr).Create()
+    # res = cli.query("SELECT * FROM Win32_ComputerSystem")
+    # cli.query_output(res)
+    # list_int = cli.list()
+    # cli.list_output(list_int)
     # client = WMI_Client(ntlmssp, DCE_C_AUTHN_LEVEL.PKT_INTEGRITY, verb=False)
     # client.connect("192.168.100.100")
 

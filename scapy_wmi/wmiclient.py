@@ -1,3 +1,4 @@
+from functools import partial
 import uuid
 from scapy.utils import (
     CLIUtil,
@@ -21,9 +22,12 @@ from scapy_wmi.msrpce.raw.ms_wmi import (
     MInterfacePointer,
     GetObject_Request,
     GetObject_Response,
+    ExecMethod_Request,
+    ExecMethod_Response,
 )
 from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
 from scapy_wmi.types.wmi_classes import WMI_Class
+from scapy.packet import Packet
 
 # TODO
 # Implement shell
@@ -31,6 +35,72 @@ from scapy_wmi.types.wmi_classes import WMI_Class
 # SSPNEGO, fix two ssp
 # Implement class, filter
 
+
+class IWbemClassObject():
+    """
+    The IWbemClassObject interface represents a WMI object, such as a WMI class or an object
+    instance. All CIM objects (CIM classes and CIM instances) that are passed during WMI calls
+    between the client and server are objects of this interface
+    """
+
+    encodingUnit: ENCODING_UNIT
+    objRef: OBJREF
+
+    fields_desc = []
+
+    def __init__(self, interface: MInterfacePointer):
+        self.objRef = OBJREF(interface.abData)
+
+        self.encodingUnit: ENCODING_UNIT = ENCODING_UNIT(self.objRef.pObjectData.load)
+        self.encodingUnit.ObjectBlock.parseObject()
+
+        if self.encodingUnit.ObjectBlock.isInstance():
+            raise ValueError("This is an instance")
+        else:
+            self.createMethods(self.getClassName(), self.getMethods())
+
+    def getClassName(self) -> str:
+        if self.encodingUnit.ObjectBlock.isInstance():
+            return self.encodingUnit.ObjectBlock.InstanceType.CurrentClass.getClassName().split(
+                " "
+            )[
+                0
+            ]
+        else:
+            return self.encodingUnit.ObjectBlock.ClassType.CurrentClass.getClassName().split(
+                " "
+            )[
+                0
+            ]
+
+    def getMethods(self):
+        if self.encodingUnit.ObjectBlock.ctCurrent is not None:
+            return self.encodingUnit.ObjectBlock.ctCurrent["methods"]
+        return dict()
+
+    def getProperties(self):
+        if self.encodingUnit.ObjectBlock.ctCurrent:
+            return self.encodingUnit.ObjectBlock.ctCurrent["properties"]
+        return dict()
+
+    def createMethods(self, className: str, methods: dict):
+        class FunctionPool:
+            def __init__(self, function):
+                self.function = function
+
+            def __getitem__(self, item):
+                return partial(self.function, item)
+
+        @FunctionPool
+        def innerMethod(staticArgs, *args):
+            className: str = staticArgs[0] 
+            methodDefinition: dict = staticArgs[1]
+            print(methodDefinition)
+
+        for methodName in methods:
+           innerMethod.__name__ = methodName
+           setattr(self,innerMethod.__name__,innerMethod[className,methods[methodName]])
+       
 
 class WMI_Client(DCOM_Client):
     auth_level: DCE_C_AUTHN_LEVEL
@@ -136,7 +206,7 @@ class WMI_Client(DCOM_Client):
 
     def getObject(
         self, objectPath: str, objref_wmi: ObjectInstance | None = None
-    ) -> OBJREF:
+    ) -> MInterfacePointer:
         null_val_ptr = MInterfacePointer(max_count=0, ulCntData=0)
         pktctr = GetObject_Request(
             strObjectPath=NDRPointer(
@@ -171,13 +241,58 @@ class WMI_Client(DCOM_Client):
         if result_query.ppObject is None:
             raise ValueError("Returned object pointer is NULL")
 
-        ppEnum_value: MInterfacePointer = (
-            result_query.ppObject.value.value
-        ) 
+        ppEnum_value: MInterfacePointer = result_query.ppObject.value.value
 
-        obj_ = OBJREF(ppEnum_value.abData)
+        return ppEnum_value
 
-        return obj_
+    def execMethod(
+        self,
+        objectPath: str,
+        method: str,
+        obj: OBJREF,
+        objref_wmi: ObjectInstance | None = None,
+    ):
+        pktctr = ExecMethod_Request(
+            strObjectPath=NDRPointer(
+                referent_id=0x72657355,
+                value=FLAGGED_WORD_BLOB(
+                    max_count=len(objectPath),
+                    cBytes=len(objectPath) * 2,
+                    clSize=len(objectPath),
+                    asData=objectPath.encode("utf-16le"),
+                ),
+            ),
+            strMethodName=NDRPointer(
+                referent_id=0x72657355,
+                value=FLAGGED_WORD_BLOB(
+                    max_count=len(objectPath),
+                    cBytes=len(objectPath) * 2,
+                    clSize=len(objectPath),
+                    asData=objectPath.encode("utf-16le"),
+                ),
+            ),
+            pCtx=NDRPointer(
+                referent_id=0,
+                value=NDRPointer(
+                    referent_id=0x72657355,
+                    value=MInterfacePointer(max_count=0, ulCntData=0),
+                ),
+            ),
+            # pInParams=None,
+        )
+
+        if objref_wmi is None:
+            objref_wmi = self.current_namespace
+
+        result_query = objref_wmi.sr1_req(
+            pkt=pktctr,
+            iface=find_com_interface("IWbemServices"),
+            auth_level=self.auth_level,
+        )
+
+        if not isinstance(result_query, ExecMethod_Response):
+            result_query.show()
+            raise ValueError("ExecMethod failed !")
 
     def get_query_result(self, obj_ppEnum: ObjectInstance) -> list[MInterfacePointer]:
         op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
