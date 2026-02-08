@@ -12,7 +12,12 @@ from scapy.layers.dcerpc import (
     NDRPointer,
     RPC_C_IMP_LEVEL,
 )
-from scapy.layers.msrpce.msdcom import DCOM_Client, ObjectInstance, OBJREF
+from scapy.layers.msrpce.msdcom import (
+    DCOM_Client,
+    ObjectInstance,
+    OBJREF,
+    OBJREF_CUSTOM,
+)
 from scapy_wmi.msrpce.raw.ms_wmi import (
     NTLMLogin_Request,
     FLAGGED_WORD_BLOB,
@@ -25,7 +30,12 @@ from scapy_wmi.msrpce.raw.ms_wmi import (
     ExecMethod_Request,
     ExecMethod_Response,
 )
-from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
+from scapy_wmi.msrpce.mswmio import (
+    ENCODING_UNIT,
+    OBJECT_BLOCK,
+    INSTANCE_TYPE,
+    ENCODED_STRING,
+)
 from scapy_wmi.types.wmi_classes import WMI_Class
 from scapy.packet import Packet
 
@@ -36,7 +46,7 @@ from scapy.packet import Packet
 # Implement class, filter
 
 
-class IWbemClassObject():
+class IWbemClassObject:
     """
     The IWbemClassObject interface represents a WMI object, such as a WMI class or an object
     instance. All CIM objects (CIM classes and CIM instances) that are passed during WMI calls
@@ -48,12 +58,13 @@ class IWbemClassObject():
 
     fields_desc = []
 
-    def __init__(self, interface: MInterfacePointer):
+    def __init__(self, interface: MInterfacePointer, wmi_client):
         self.objRef = OBJREF(interface.abData)
 
         self.encodingUnit: ENCODING_UNIT = ENCODING_UNIT(self.objRef.pObjectData.load)
         self.encodingUnit.ObjectBlock.parseObject()
 
+        self.client = wmi_client
         if self.encodingUnit.ObjectBlock.isInstance():
             raise ValueError("This is an instance")
         else:
@@ -93,14 +104,48 @@ class IWbemClassObject():
 
         @FunctionPool
         def innerMethod(staticArgs, *args):
-            className: str = staticArgs[0] 
+            className: str = staticArgs[0]
             methodDefinition: dict = staticArgs[1]
-            print(methodDefinition)
+
+            objRefCustom: OBJREF_CUSTOM | None
+            # Create an object ref for the in param
+            if methodDefinition["InParams"] is not None:
+                if len(args) != len(methodDefinition["InParams"]):
+                    raise ValueError(
+                        "Function called with %d parameters instead of %d!"
+                        % (len(args), len(methodDefinition["InParams"]))
+                    )
+                # Create encoding unit
+
+                instanceType = INSTANCE_TYPE()
+
+                parametersClass = ENCODED_STRING()/"__PARAMETERS"
+                instanceHeap = b""
+                for i, arg in enumerate(args):
+                    paramDefinition = list(methodDefinition['InParams'].values())[i]
+                    print(paramDefinition)
+
+                # Create objectref custom
+                objRefCustom = (
+                    OBJREF_CUSTOM(
+                        clsid="4590F812-1D3A-11D0-891F-00AA004B2E24",
+                    )
+                    / ENCODING_UNIT()
+                    / OBJECT_BLOCK(ObjectFlags=0x02)
+                    / instanceType
+                )
+            else:
+                # No param null pointer
+                objRefCustom = None
+
+            self.client.execMethod(className, methodDefinition["name"], objRefCustom)
 
         for methodName in methods:
-           innerMethod.__name__ = methodName
-           setattr(self,innerMethod.__name__,innerMethod[className,methods[methodName]])
-       
+            innerMethod.__name__ = methodName
+            setattr(
+                self, innerMethod.__name__, innerMethod[className, methods[methodName]]
+            )
+
 
 class WMI_Client(DCOM_Client):
     auth_level: DCE_C_AUTHN_LEVEL
@@ -249,7 +294,7 @@ class WMI_Client(DCOM_Client):
         self,
         objectPath: str,
         method: str,
-        obj: OBJREF,
+        obj: OBJREF_CUSTOM | None,
         objref_wmi: ObjectInstance | None = None,
     ):
         pktctr = ExecMethod_Request(
@@ -265,10 +310,10 @@ class WMI_Client(DCOM_Client):
             strMethodName=NDRPointer(
                 referent_id=0x72657355,
                 value=FLAGGED_WORD_BLOB(
-                    max_count=len(objectPath),
-                    cBytes=len(objectPath) * 2,
-                    clSize=len(objectPath),
-                    asData=objectPath.encode("utf-16le"),
+                    max_count=len(method),
+                    cBytes=len(method) * 2,
+                    clSize=len(method),
+                    asData=method.encode("utf-16le"),
                 ),
             ),
             pCtx=NDRPointer(
@@ -278,7 +323,7 @@ class WMI_Client(DCOM_Client):
                     value=MInterfacePointer(max_count=0, ulCntData=0),
                 ),
             ),
-            # pInParams=None,
+            pInParams=obj,
         )
 
         if objref_wmi is None:
