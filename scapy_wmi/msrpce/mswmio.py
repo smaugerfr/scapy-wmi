@@ -6,7 +6,7 @@
 from enum import Enum
 import struct
 from typing import Optional, OrderedDict, Self
-from scapy.packet import Packet
+from scapy.packet import Packet, Raw
 from scapy.fields import (
     StrLenField,
     LEIntField,
@@ -75,6 +75,15 @@ class ENCODED_STRING(Packet):
             return len(p.value) + 1 + 1  # Flag len + Null byte
         else:
             return len(p.value) + 1 + 1  # Flag len + Null byte
+        
+    def add_payload(self, payload):
+        if isinstance(payload, Raw):
+            cls = self.guess_payload_class(payload)
+            payload = cls(payload.load)
+        super().add_payload(payload)
+
+    def post_build(self, p, pay):
+        return p + pay + b"\x00"
 
 
 WBEM_FLAVOR_FLAG_PROPAGATE_O_INSTANCE      = 0x01
