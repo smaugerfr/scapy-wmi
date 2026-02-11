@@ -792,7 +792,7 @@ class INSTANCE_TYPE(Packet):
     # ValueTable encodes the literal values of the properties or references to their values in the heap
     # the value here is relevant only if the corresponding NDTable bits for that property are both not set, that is, 0
     # When encoding or decoding ValueTable under InstanceData of InstanceType, the NdTableValueTableLength specified in InstanceType.CurrentClass.ClassPart.ClassHeader MUST be used.
-    InstanceData: str  # Not implemented
+    InstanceData: str
     InstanceQualifierSet: INSTANCE_QUALIFIER_SET
     InstanceHeap: CLASS_HEAP
     fields_desc = [
@@ -803,24 +803,27 @@ class INSTANCE_TYPE(Packet):
         StrLenField(
             "NdTable",
             b"",
-            length_from=lambda pkt: pkt.CurrentClass.ClassPart.ClassHeader.NdTableValueTableLength,
+            lambda pkt: (pkt.CurrentClass.ClassPart.PropertyLookupTable.PropertyCount - 1) // 4 + 1,
+        ),
+        StrLenField(
+            "InstanceData",
+            b"",
+            lambda pkt: pkt.CurrentClass.ClassPart.ClassHeader.NdTableValueTableLength
+            - ((pkt.CurrentClass.ClassPart.PropertyLookupTable.PropertyCount - 1) // 4 + 1),
         ),
         PacketField("InstanceQualifierSet", None, INSTANCE_QUALIFIER_SET),
         PacketField("InstanceHeap", None, CLASS_HEAP),
     ]
 
     def __processNdTable(self, properties):
-        octetCount = (len(properties) - 1) // 4 + 1  # see [MS-WMIO]: 2.2.26 NdTable
-        packedNdTable = self.NdTable[:octetCount]
         unpackedNdTable = [
-            (byte >> shift) & 0b11 for byte in packedNdTable for shift in (0, 2, 4, 6)
+            (byte >> shift) & 0b11 for byte in self.InstanceData for shift in (0, 2, 4, 6)
         ]
         for key in properties:
             ndEntry = unpackedNdTable[properties[key]["order"]]
             properties[key]["null_default"] = bool(ndEntry & 0b01)
             properties[key]["inherited_default"] = bool(ndEntry & 0b10)
 
-        return octetCount
 
     @staticmethod
     def __isNonNullNumber(prop):
@@ -830,8 +833,8 @@ class INSTANCE_TYPE(Packet):
 
     def getValues(self, properties: dict):
         heap = self.InstanceHeap.HeapItem
-        valueTableOff = self.__processNdTable(properties)
-        valueTable = self.NdTable[valueTableOff:]
+        self.__processNdTable(properties)
+        valueTable = self.InstanceData
         sorted_props = sorted(
             list(properties.keys()), key=lambda k: properties[k]["order"]
         )
