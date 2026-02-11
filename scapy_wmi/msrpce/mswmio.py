@@ -22,7 +22,7 @@ from scapy.fields import (
     LESignedIntField,
     LESignedLongField,
     LELongField,
-    ThreeBytesField
+    ThreeBytesField,
 )
 
 
@@ -75,7 +75,7 @@ class ENCODED_STRING(Packet):
             return len(p.value) + 1 + 1  # Flag len + Null byte
         else:
             return len(p.value) + 1 + 1  # Flag len + Null byte
-        
+
     def add_payload(self, payload):
         if isinstance(payload, Raw):
             cls = self.guess_payload_class(payload)
@@ -86,12 +86,12 @@ class ENCODED_STRING(Packet):
         return p + pay + b"\x00"
 
 
-WBEM_FLAVOR_FLAG_PROPAGATE_O_INSTANCE      = 0x01
+WBEM_FLAVOR_FLAG_PROPAGATE_O_INSTANCE = 0x01
 WBEM_FLAVOR_FLAG_PROPAGATE_O_DERIVED_CLASS = 0x02
-WBEM_FLAVOR_NOT_OVERRIDABLE                = 0x10
-WBEM_FLAVOR_ORIGIN_PROPAGATED              = 0x20
-WBEM_FLAVOR_ORIGIN_SYSTEM                  = 0x40
-WBEM_FLAVOR_AMENDED                        = 0x80
+WBEM_FLAVOR_NOT_OVERRIDABLE = 0x10
+WBEM_FLAVOR_ORIGIN_PROPAGATED = 0x20
+WBEM_FLAVOR_ORIGIN_SYSTEM = 0x40
+WBEM_FLAVOR_AMENDED = 0x80
 
 # 2.2.32 Inherited
 Inherited = 0x4000
@@ -519,7 +519,7 @@ class CLASS_PART(Packet):
     ClassQualifierSet: QUALIFIER_SET
     PropertyLookupTable: PROPERTY_LOOKUP_TABLE
     # The NdTable (section 2.2.26) indicates whether a particular CIM property
-    # has a default value that is locally defined in the current CIM class or 
+    # has a default value that is locally defined in the current CIM class or
     # whether the default is defined in a superclass
     NdTable: Optional[str]
     # The ValueTable (section 2.2.29) contains values inline for simple numeric properties, or
@@ -538,16 +538,16 @@ class CLASS_PART(Packet):
                 b"",
                 lambda pkt: (pkt.PropertyLookupTable.PropertyCount - 1) // 4 + 1,
             ),
-            lambda pkt: pkt.PropertyLookupTable.PropertyCount > 0
+            lambda pkt: pkt.PropertyLookupTable.PropertyCount > 0,
         ),
         ConditionalField(
             StrLenField(
                 "ValueTable",
                 b"",
-                lambda pkt: pkt.ClassHeader.NdTableValueTableLength 
+                lambda pkt: pkt.ClassHeader.NdTableValueTableLength
                 - ((pkt.PropertyLookupTable.PropertyCount - 1) // 4 + 1),
             ),
-            lambda pkt: pkt.PropertyLookupTable.PropertyCount > 0
+            lambda pkt: pkt.PropertyLookupTable.PropertyCount > 0,
         ),
         PacketField("ClassHeap", None, CLASS_HEAP),
     ]
@@ -605,6 +605,7 @@ class CLASS_PART(Packet):
         rest = s[remaining:]
         return garbage, rest
 
+
 # 2.2.41 MethodDescription
 class METHOD_DESCRIPTION(Packet):
     MethodName: int
@@ -614,7 +615,7 @@ class METHOD_DESCRIPTION(Packet):
     MethodQualifiers: int
     InputSignature: int
     OutputSignature: int
-    
+
     fields_desc = [
         LEIntField("MethodName", None),
         ByteField("MethodFlags", None),
@@ -629,6 +630,8 @@ class METHOD_DESCRIPTION(Packet):
 
     def extract_padding(self, s):
         return b"", s
+
+
 # 2.2.38 MethodsPart
 class METHODS_PART(Packet):
     name = "MethodsPart"
@@ -641,13 +644,15 @@ class METHODS_PART(Packet):
         LEIntField("EncodingLength", None),
         LEShortField("MethodCount", None),
         LEShortField("MethodCountPadding", None),
-        StrLenField("MethodDescription", b"", length_from=lambda pkt: pkt.MethodCount*24),
+        StrLenField(
+            "MethodDescription", b"", length_from=lambda pkt: pkt.MethodCount * 24
+        ),
         PacketField("MethodHeap", None, CLASS_HEAP),
     ]
 
     def extract_padding(self, s):
         return b"", s
-    
+
     def getMethods(self):
         methods = OrderedDict()
         data = self.MethodDescription
@@ -660,30 +665,40 @@ class METHODS_PART(Packet):
                 # TODO
                 # raise ValueError("WBEM_FLAVOR_ORIGIN_PROPAGATED not yet supported!")
                 continue
-            methodDict['name'] = ENCODED_STRING(heap[itemn.MethodName:]).str_value()
-            methodDict['origin'] = itemn.MethodOrigin
-            if itemn.MethodQualifiers != 0xffffffff:
+            methodDict["name"] = ENCODED_STRING(heap[itemn.MethodName :]).str_value()
+            methodDict["origin"] = itemn.MethodOrigin
+            if itemn.MethodQualifiers != 0xFFFFFFFF:
                 # There are qualifiers
-                qualifiersSet: QUALIFIER_SET = QUALIFIER_SET(heap[itemn.MethodQualifiers:])
+                qualifiersSet: QUALIFIER_SET = QUALIFIER_SET(
+                    heap[itemn.MethodQualifiers :]
+                )
                 qualifiers = qualifiersSet.getQualifiers(heap)
-                methodDict['qualifiers'] = qualifiers
-            if itemn.InputSignature != 0xffffffff:
-                inputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(heap[itemn.InputSignature:])
+                methodDict["qualifiers"] = qualifiers
+            if itemn.InputSignature != 0xFFFFFFFF:
+                inputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(
+                    heap[itemn.InputSignature :]
+                )
                 if inputSignature.EncodingLength > 0:
-                    methodDict['InParams'] = inputSignature.ObjectBlock.Encoding.CurrentClass.getProperties()
-                    methodDict['InParamsRaw'] = inputSignature.ObjectBlock
-                    #print methodDict['InParams'] 
+                    methodDict["InParams"] = (
+                        inputSignature.ObjectBlock.Encoding.CurrentClass.getProperties()
+                    )
+                    methodDict["InParamsRaw"] = inputSignature.ObjectBlock
+                    # print methodDict['InParams']
                 else:
-                    methodDict['InParams'] = None
-            if itemn.OutputSignature != 0xffffffff:
-                outputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(heap[itemn.OutputSignature:])
+                    methodDict["InParams"] = None
+            if itemn.OutputSignature != 0xFFFFFFFF:
+                outputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(
+                    heap[itemn.OutputSignature :]
+                )
                 if outputSignature.EncodingLength > 0:
-                    methodDict['OutParams'] = outputSignature.ObjectBlock.Encoding.CurrentClass.getProperties()
-                    methodDict['OutParamsRaw'] = outputSignature.ObjectBlock
+                    methodDict["OutParams"] = (
+                        outputSignature.ObjectBlock.Encoding.CurrentClass.getProperties()
+                    )
+                    methodDict["OutParamsRaw"] = outputSignature.ObjectBlock
                 else:
-                    methodDict['OutParams'] = None
+                    methodDict["OutParams"] = None
             data = data[24:]
-            methods[methodDict['name']] = methodDict
+            methods[methodDict["name"]] = methodDict
 
         return methods
 
@@ -720,7 +735,7 @@ class CLASS_AND_METHODS_PART(Packet):
 
     def getProperties(self):
         return self.ClassPart.getProperties()
-    
+
     def getMethods(self):
         return self.MethodsPart.getMethods()
 
@@ -769,15 +784,15 @@ class INSTANCE_TYPE(Packet):
     InstanceFlags: int
     InstanceClassName: int
     # NdTable is an encoded table that represents the behavior of the default value of properties in a CIM class.
-    # Information of inheritage must be maintained in the encoding. 
+    # Information of inheritage must be maintained in the encoding.
     # Only 2 bits are required to indicate this information for each property; therefore, the bit fields are packed into octets.
     # octetCount = (PropertyCount - 1) / 4 + 1 // a formula, not ABNF
     # When encoding or decoding NdTable under InstanceType, the PropertyCount specified in InstanceType.CurrentClass.ClassPart.PropertyLookupTable MUST be used
-    NdTable: str 
+    NdTable: str
     # ValueTable encodes the literal values of the properties or references to their values in the heap
     # the value here is relevant only if the corresponding NDTable bits for that property are both not set, that is, 0
     # When encoding or decoding ValueTable under InstanceData of InstanceType, the NdTableValueTableLength specified in InstanceType.CurrentClass.ClassPart.ClassHeader MUST be used.
-    InstanceData: str # Not implemented
+    InstanceData: str  # Not implemented
     InstanceQualifierSet: INSTANCE_QUALIFIER_SET
     InstanceHeap: CLASS_HEAP
     fields_desc = [
@@ -847,12 +862,13 @@ class INSTANCE_TYPE(Packet):
     def extract_padding(self, s):
         return b"", s
 
+
 class CLASS_TYPE(Packet):
     ParentClass: CLASS_AND_METHODS_PART
     CurrentClass: CLASS_AND_METHODS_PART
     fields_desc = [
         PacketField("ParentClass", None, CLASS_AND_METHODS_PART),
-        PacketField("CurrentClass", None, CLASS_AND_METHODS_PART)
+        PacketField("CurrentClass", None, CLASS_AND_METHODS_PART),
     ]
 
 
@@ -869,11 +885,17 @@ class OBJECT_BLOCK(Packet):
         ),
         MultipleTypeField(
             [
-                (PacketField("Encoding", None, INSTANCE_TYPE), lambda p: p.ObjectFlags & 0x02),
-                (PacketField("Encoding", None, CLASS_TYPE), lambda p: p.ObjectFlags & 0x01)
+                (
+                    PacketField("Encoding", None, INSTANCE_TYPE),
+                    lambda p: p.ObjectFlags & 0x02,
+                ),
+                (
+                    PacketField("Encoding", None, CLASS_TYPE),
+                    lambda p: p.ObjectFlags & 0x01,
+                ),
             ],
-            PacketField("Encoding", None, Raw)
-        )
+            PacketField("Encoding", None, Raw),
+        ),
     ]
 
     def extract_padding(self, s):
