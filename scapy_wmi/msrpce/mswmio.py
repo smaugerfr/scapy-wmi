@@ -518,17 +518,36 @@ class CLASS_PART(Packet):
     DerivationList: DERIVATION_LIST
     ClassQualifierSet: QUALIFIER_SET
     PropertyLookupTable: PROPERTY_LOOKUP_TABLE
-    NdTable_ValueTable: str
+    # The NdTable (section 2.2.26) indicates whether a particular CIM property
+    # has a default value that is locally defined in the current CIM class or 
+    # whether the default is defined in a superclass
+    NdTable: Optional[str]
+    # The ValueTable (section 2.2.29) contains values inline for simple numeric properties, or
+    # references to the values in the ClassHeap (section 2.2.37) for all other specified values in the
+    # HeapItem rule, such as arrays or strings.
+    ValueTable: Optional[str]
     ClassHeap: CLASS_HEAP
     fields_desc = [
         PacketField("ClassHeader", None, CLASS_HEADER),
         PacketField("DerivationList", None, DERIVATION_LIST),
         PacketField("ClassQualifierSet", None, QUALIFIER_SET),
         PacketField("PropertyLookupTable", None, PROPERTY_LOOKUP_TABLE),
-        StrLenField(
-            "NdTable_ValueTable",
-            b"",
-            lambda pkt: pkt.ClassHeader.NdTableValueTableLength,
+        ConditionalField(
+            StrLenField(
+                "NdTable",
+                b"",
+                lambda pkt: (pkt.PropertyLookupTable.PropertyCount - 1) // 4 + 1,
+            ),
+            lambda pkt: pkt.PropertyLookupTable.PropertyCount > 0
+        ),
+        ConditionalField(
+            StrLenField(
+                "ValueTable",
+                b"",
+                lambda pkt: pkt.ClassHeader.NdTableValueTableLength 
+                - ((pkt.PropertyLookupTable.PropertyCount - 1) // 4 + 1),
+            ),
+            lambda pkt: pkt.PropertyLookupTable.PropertyCount > 0
         ),
         PacketField("ClassHeap", None, CLASS_HEAP),
     ]
@@ -542,8 +561,9 @@ class CLASS_PART(Packet):
         sorted_props = sorted(
             list(properties.keys()), key=lambda k: properties[k]["order"]
         )
-        valueTableOff = (len(properties) - 1) // 4 + 1
-        valueTable = self.NdTable_ValueTable[valueTableOff:]
+        if self.ValueTable is None:
+            raise ValueError("ValueTable is empty, maybe there is no properties")
+        valueTable = self.ValueTable
         for key in sorted_props:
             # Let's get the default Values
             pType = properties[key]["type"] & (~(CIM_ARRAY_FLAG | Inherited))
@@ -650,7 +670,7 @@ class METHODS_PART(Packet):
             if itemn.InputSignature != 0xffffffff:
                 inputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(heap[itemn.InputSignature:])
                 if inputSignature.EncodingLength > 0:
-                    methodDict['InParams'] = inputSignature.ObjectBlock.ClassType.CurrentClass.getProperties()
+                    methodDict['InParams'] = inputSignature.ObjectBlock.Encoding.CurrentClass.getProperties()
                     methodDict['InParamsRaw'] = inputSignature.ObjectBlock
                     #print methodDict['InParams'] 
                 else:
@@ -658,7 +678,7 @@ class METHODS_PART(Packet):
             if itemn.OutputSignature != 0xffffffff:
                 outputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(heap[itemn.OutputSignature:])
                 if outputSignature.EncodingLength > 0:
-                    methodDict['OutParams'] = outputSignature.ObjectBlock.ClassType.CurrentClass.getProperties()
+                    methodDict['OutParams'] = outputSignature.ObjectBlock.Encoding.CurrentClass.getProperties()
                     methodDict['OutParamsRaw'] = outputSignature.ObjectBlock
                 else:
                     methodDict['OutParams'] = None
@@ -748,7 +768,16 @@ class INSTANCE_TYPE(Packet):
     EncodingLength: int
     InstanceFlags: int
     InstanceClassName: int
-    NdTable_ValueTable: str
+    # NdTable is an encoded table that represents the behavior of the default value of properties in a CIM class.
+    # Information of inheritage must be maintained in the encoding. 
+    # Only 2 bits are required to indicate this information for each property; therefore, the bit fields are packed into octets.
+    # octetCount = (PropertyCount - 1) / 4 + 1 // a formula, not ABNF
+    # When encoding or decoding NdTable under InstanceType, the PropertyCount specified in InstanceType.CurrentClass.ClassPart.PropertyLookupTable MUST be used
+    NdTable: str 
+    # ValueTable encodes the literal values of the properties or references to their values in the heap
+    # the value here is relevant only if the corresponding NDTable bits for that property are both not set, that is, 0
+    # When encoding or decoding ValueTable under InstanceData of InstanceType, the NdTableValueTableLength specified in InstanceType.CurrentClass.ClassPart.ClassHeader MUST be used.
+    InstanceData: str # Not implemented
     InstanceQualifierSet: INSTANCE_QUALIFIER_SET
     InstanceHeap: CLASS_HEAP
     fields_desc = [
@@ -757,7 +786,7 @@ class INSTANCE_TYPE(Packet):
         ByteField("InstanceFlags", None),  # 2.2.54 InstanceFlags
         LEIntField("InstanceClassName", None),  # 2.2.69 HeapRef
         StrLenField(
-            "NdTable_ValueTable",
+            "NdTable",
             b"",
             length_from=lambda pkt: pkt.CurrentClass.ClassPart.ClassHeader.NdTableValueTableLength,
         ),
@@ -767,7 +796,7 @@ class INSTANCE_TYPE(Packet):
 
     def __processNdTable(self, properties):
         octetCount = (len(properties) - 1) // 4 + 1  # see [MS-WMIO]: 2.2.26 NdTable
-        packedNdTable = self.NdTable_ValueTable[:octetCount]
+        packedNdTable = self.NdTable[:octetCount]
         unpackedNdTable = [
             (byte >> shift) & 0b11 for byte in packedNdTable for shift in (0, 2, 4, 6)
         ]
@@ -787,7 +816,7 @@ class INSTANCE_TYPE(Packet):
     def getValues(self, properties: dict):
         heap = self.InstanceHeap.HeapItem
         valueTableOff = self.__processNdTable(properties)
-        valueTable = self.NdTable_ValueTable[valueTableOff:]
+        valueTable = self.NdTable[valueTableOff:]
         sorted_props = sorted(
             list(properties.keys()), key=lambda k: properties[k]["order"]
         )
@@ -832,36 +861,38 @@ class OBJECT_BLOCK(Packet):
     name = "ObjectBlock"
     ObjectFlags: int
     Decoration: Optional[DECORATION]
-    InstanceType: INSTANCE_TYPE
-    ClassType: CLASS_TYPE
+    Encoding: INSTANCE_TYPE | CLASS_TYPE
     fields_desc = [
         ByteField("ObjectFlags", None),
         ConditionalField(  # This block MUST be present if the ObjectFlags (section 2.2.6) octet has 0x04 bit flag set; otherwise, it MUST be omitted.
             PacketField("Decoration", None, DECORATION), lambda p: p.ObjectFlags & 0x04
         ),
-        ConditionalField(
-            PacketField("InstanceType", None, INSTANCE_TYPE), lambda p: p.ObjectFlags & 0x02
-        ),
-        ConditionalField(
-            PacketField("ClassType", None, CLASS_TYPE), lambda p: p.ObjectFlags & 0x01
-        ),
+        MultipleTypeField(
+            [
+                (PacketField("Encoding", None, INSTANCE_TYPE), lambda p: p.ObjectFlags & 0x02),
+                (PacketField("Encoding", None, CLASS_TYPE), lambda p: p.ObjectFlags & 0x01)
+            ],
+            PacketField("Encoding", None, Raw)
+        )
     ]
 
     def extract_padding(self, s):
         return b"", s
 
     def parseObject(self):
-        if self.ObjectFlags & 0x02:
+        if self.isInstance():
             # The object is a CIM instance
-            ctCurrent: CLASS_AND_METHODS_PART = self.InstanceType.CurrentClass
+            cim_instance: INSTANCE_TYPE = self.Encoding
+            ctCurrent: CLASS_AND_METHODS_PART = cim_instance.CurrentClass
             currentName = ctCurrent.getClassName()
             if currentName is not None:
-                self.ctCurrent = self.parseClass(ctCurrent, self.InstanceType)
+                self.ctCurrent = self.parseClass(ctCurrent, cim_instance)
             return
         else:
             # The object is a CIM class
-            ctParent: CLASS_AND_METHODS_PART = self.ClassType.ParentClass
-            ctCurrent: CLASS_AND_METHODS_PART = self.ClassType.CurrentClass
+            cim_class: CLASS_TYPE = self.Encoding
+            ctParent: CLASS_AND_METHODS_PART = cim_class.ParentClass
+            ctCurrent: CLASS_AND_METHODS_PART = cim_class.CurrentClass
 
             parentName = ctParent.getClassName()
             if parentName is not None:
@@ -887,10 +918,8 @@ class OBJECT_BLOCK(Packet):
 
         return classDict
 
-    def isInstance(self):
-        if self.ObjectFlags & 0x01:
-            return False
-        return True
+    def isInstance(self) -> bool:
+        return bool(self.ObjectFlags & 0x02)
 
     def printClass(
         self, pClass: CLASS_AND_METHODS_PART, cInstance: INSTANCE_TYPE = None
@@ -994,17 +1023,19 @@ class OBJECT_BLOCK(Packet):
         print("}")
 
     def printInformation(self):
-        if self.ObjectFlags & 0x02:
+        if self.isInstance():
             # The object is a CIM instance
-            ctCurrent: CLASS_AND_METHODS_PART = self.InstanceType.CurrentClass
+            cim_instance: INSTANCE_TYPE = self.Encoding
+            ctCurrent: CLASS_AND_METHODS_PART = cim_instance.CurrentClass
             currentName = ctCurrent.getClassName()
             if currentName is not None:
-                self.printClass(ctCurrent, self.InstanceType)
+                self.printClass(ctCurrent, cim_instance)
             return
         else:
             # The object is a CIM class
-            ctParent: CLASS_AND_METHODS_PART = self.ClassType.ParentClass
-            ctCurrent: CLASS_AND_METHODS_PART = self.ClassType.CurrentClass
+            cim_class: CLASS_TYPE = self.Encoding
+            ctParent: CLASS_AND_METHODS_PART = cim_class.ParentClass
+            ctCurrent: CLASS_AND_METHODS_PART = cim_class.CurrentClass
 
             parentName = ctParent.getClassName()
             if parentName is not None:
