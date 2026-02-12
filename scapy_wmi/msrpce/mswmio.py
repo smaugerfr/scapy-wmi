@@ -510,6 +510,12 @@ class CLASS_HEAP(Packet):
     def extract_padding(self, s):
         return b"", s
 
+    def post_build(self, pkt, pay):
+        if self.HeapLength is None and pay:
+            l = len(pay)
+            pkt = l.to_bytes(length=4, byteorder="little")
+        return pkt + pay
+
 
 # 2.2.15 ClassPart
 class CLASS_PART(Packet):
@@ -803,13 +809,20 @@ class INSTANCE_TYPE(Packet):
         StrLenField(
             "NdTable",
             b"",
-            lambda pkt: (pkt.CurrentClass.ClassPart.PropertyLookupTable.PropertyCount - 1) // 4 + 1,
+            lambda pkt: (
+                pkt.CurrentClass.ClassPart.PropertyLookupTable.PropertyCount - 1
+            )
+            // 4
+            + 1,
         ),
         StrLenField(
             "InstanceData",
             b"",
             lambda pkt: pkt.CurrentClass.ClassPart.ClassHeader.NdTableValueTableLength
-            - ((pkt.CurrentClass.ClassPart.PropertyLookupTable.PropertyCount - 1) // 4 + 1),
+            - (
+                (pkt.CurrentClass.ClassPart.PropertyLookupTable.PropertyCount - 1) // 4
+                + 1
+            ),
         ),
         PacketField("InstanceQualifierSet", None, INSTANCE_QUALIFIER_SET),
         PacketField("InstanceHeap", None, CLASS_HEAP),
@@ -817,13 +830,14 @@ class INSTANCE_TYPE(Packet):
 
     def __processNdTable(self, properties):
         unpackedNdTable = [
-            (byte >> shift) & 0b11 for byte in self.InstanceData for shift in (0, 2, 4, 6)
+            (byte >> shift) & 0b11
+            for byte in self.InstanceData
+            for shift in (0, 2, 4, 6)
         ]
         for key in properties:
             ndEntry = unpackedNdTable[properties[key]["order"]]
             properties[key]["null_default"] = bool(ndEntry & 0b01)
             properties[key]["inherited_default"] = bool(ndEntry & 0b10)
-
 
     @staticmethod
     def __isNonNullNumber(prop):
@@ -864,6 +878,16 @@ class INSTANCE_TYPE(Packet):
 
     def extract_padding(self, s):
         return b"", s
+
+    def post_build(self, pkt, pay):
+        if self.EncodingLength is None and self.CurrentClass is not None:
+            currClassLen = len(self.CurrentClass)
+            pkt = (
+                pkt[:currClassLen]
+                + (len(pkt) - currClassLen).to_bytes(length=4, byteorder="little")
+                + pkt[currClassLen + 4 :]
+            )
+        return pkt + pay
 
 
 class CLASS_TYPE(Packet):
@@ -1096,6 +1120,13 @@ class ENCODING_UNIT(Packet):
         LEIntField("ObjectEncodingLength", None),  # 2.2.4 ObjectEncodingLength
         PacketField("ObjectBlock", None, OBJECT_BLOCK),
     ]
+
+    def post_build(self, pkt, pay):
+        if self.ObjectEncodingLength is None:
+            pkt = (
+                pkt[:4] + len(pay).to_bytes(length=4, byteorder="little") + pkt[4 + 4 :]
+            )
+        return pkt + pay
 
 
 if __name__ == "__main__":
