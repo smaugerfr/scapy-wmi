@@ -31,10 +31,15 @@ from scapy_wmi.msrpce.raw.ms_wmi import (
     ExecMethod_Response,
 )
 from scapy_wmi.msrpce.mswmio import (
+    CLASS_PART,
     ENCODING_UNIT,
     OBJECT_BLOCK,
     INSTANCE_TYPE,
     ENCODED_STRING,
+    CLASS_HEAP,
+    CURRENT_CLASS_NO_METHODS,
+    INSTANCE_QUALIFIER_SET,
+    build_argument,
 )
 from scapy_wmi.types.wmi_classes import WMI_Class
 from scapy.packet import Packet
@@ -71,18 +76,9 @@ class IWbemClassObject:
             self.createMethods(self.getClassName(), self.getMethods())
 
     def getClassName(self) -> str:
-        if self.encodingUnit.ObjectBlock.isInstance():
-            return self.encodingUnit.ObjectBlock.InstanceType.CurrentClass.getClassName().split(
-                " "
-            )[
-                0
-            ]
-        else:
-            return self.encodingUnit.ObjectBlock.ClassType.CurrentClass.getClassName().split(
-                " "
-            )[
-                0
-            ]
+        return self.encodingUnit.ObjectBlock.Encoding.CurrentClass.getClassName().split(
+            " "
+        )[0]
 
     def getMethods(self):
         if self.encodingUnit.ObjectBlock.ctCurrent is not None:
@@ -116,29 +112,55 @@ class IWbemClassObject:
                         % (len(args), len(methodDefinition["InParams"]))
                     )
                 # Create encoding unit
-
-                instanceType = INSTANCE_TYPE()
-
-                parametersClass = ENCODED_STRING()/"__PARAMETERS"
+                parametersClass: ENCODED_STRING = ENCODED_STRING() / "__PARAMETERS"
                 instanceHeap = b""
+                instanceHeap += bytes(parametersClass)
+
+                # Index of each element in instance heap
+                ValueTable: list[int] = []
+                NdTable: int = 0
+
                 for i, arg in enumerate(args):
-                    paramDefinition = list(methodDefinition['InParams'].values())[i]
-                    print(paramDefinition)
+                    paramDefinition = list(methodDefinition["InParams"].values())[i]
+
+                    (a, b, c) = build_argument(paramDefinition, arg, len(instanceHeap))
+                    instanceHeap += a
+                    ValueTable.append(b)
+                    NdTable = NdTable | c << 2 * i
+
+                objBlk_raw_in: OBJECT_BLOCK = methodDefinition["OutParamsRaw"]
+                class_part: CLASS_PART = (
+                    objBlk_raw_in.Encoding.CurrentClass.ClassPart.copy()
+                )
+                class_part.ClassHeader.EncodingLength = len(bytes(class_part))
+
+                instanceType = INSTANCE_TYPE(
+                    CurrentClass=class_part,
+                    NdTable=NdTable.to_bytes(
+                        length=(len(args) - 1) // 4 + 1, byteorder="little"
+                    ),
+                    InstanceData=b"".join(ValueTable),
+                    InstanceQualifierSet=INSTANCE_QUALIFIER_SET()
+                    / b"\x04\x00\x00\x00\x01",
+                    InstanceHeap=CLASS_HEAP() / instanceHeap,
+                )
+
+                encodingUnit = (
+                    ENCODING_UNIT() / OBJECT_BLOCK(ObjectFlags=0x02) / instanceType
+                )
 
                 # Create objectref custom
-                objRefCustom = (
+                objRefCustom = OBJREF(iid=self.objRef.iid) / (
                     OBJREF_CUSTOM(
                         clsid="4590F812-1D3A-11D0-891F-00AA004B2E24",
                     )
-                    / ENCODING_UNIT()
-                    / OBJECT_BLOCK(ObjectFlags=0x02)
-                    / instanceType
+                    / encodingUnit
                 )
             else:
                 # No param null pointer
                 objRefCustom = None
 
-            self.client.execMethod(className, methodDefinition["name"], objRefCustom)
+            self.client.execMethod(className+"\0", methodDefinition["name"]+"\0", objRefCustom)
 
         for methodName in methods:
             innerMethod.__name__ = methodName
@@ -252,7 +274,6 @@ class WMI_Client(DCOM_Client):
     def getObject(
         self, objectPath: str, objref_wmi: ObjectInstance | None = None
     ) -> MInterfacePointer:
-        null_val_ptr = MInterfacePointer(max_count=0, ulCntData=0)
         pktctr = GetObject_Request(
             strObjectPath=NDRPointer(
                 referent_id=0x72657355,
@@ -263,11 +284,15 @@ class WMI_Client(DCOM_Client):
                     asData=objectPath.encode("utf-16le"),
                 ),
             ),
-            # lFlags=0x00000010,
             pCtx=NDRPointer(
                 referent_id=0,
-                value=NDRPointer(referent_id=0x72657355, value=null_val_ptr),
+                value=NDRPointer(
+                    referent_id=0x72657355,
+                    value=MInterfacePointer(max_count=0, ulCntData=0),
+                ),
             ),
+            ppObject=None,
+            ppCallResult=None,
         )
 
         if objref_wmi is None:
@@ -294,7 +319,7 @@ class WMI_Client(DCOM_Client):
         self,
         objectPath: str,
         method: str,
-        obj: OBJREF_CUSTOM | None,
+        obj: OBJREF | None,
         objref_wmi: ObjectInstance | None = None,
     ):
         pktctr = ExecMethod_Request(
@@ -316,14 +341,10 @@ class WMI_Client(DCOM_Client):
                     asData=method.encode("utf-16le"),
                 ),
             ),
-            pCtx=NDRPointer(
-                referent_id=0,
-                value=NDRPointer(
-                    referent_id=0x72657355,
-                    value=MInterfacePointer(max_count=0, ulCntData=0),
-                ),
+            pInParams=NDRPointer(
+                referent_id=0x72657355,
+                value=MInterfacePointer(max_count=len(bytes(obj)), abData=obj),
             ),
-            pInParams=obj,
         )
 
         if objref_wmi is None:
@@ -503,7 +524,7 @@ class wmiclient(CLIUtil):
         # Create connection
         self.client = WMI_Client(ssp=ssp, auth_level=auth_level, verb=bool(debug))
         self.client.connect(target, timeout)
-        self.objref_wmi = self.client.get_namespace()
+        self.objref_wmi = self.client.set_namespace()
         self.current_namescape = "root/cimv2"
 
         # Start CLI
