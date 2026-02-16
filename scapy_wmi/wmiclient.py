@@ -222,6 +222,7 @@ class WMI_Client(DCOM_Client):
     def set_namespace(self, namespace_str: str = "root/cimv2") -> None:
         objref_wmi = self.get_namespace(namespace_str)
         self.current_namespace = objref_wmi
+        return objref_wmi
 
     def query(
         self, query: str, objref_wmi: ObjectInstance | None = None
