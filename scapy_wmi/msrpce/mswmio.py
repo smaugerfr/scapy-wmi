@@ -568,7 +568,7 @@ class CLASS_PART(Packet):
             list(properties.keys()), key=lambda k: properties[k]["order"]
         )
         if self.ValueTable is None:
-            raise ValueError("ValueTable is empty, maybe there is no properties")
+            return OrderedDict()
         valueTable = self.ValueTable
         for key in sorted_props:
             # Let's get the default Values
