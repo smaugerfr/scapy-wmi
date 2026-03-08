@@ -527,8 +527,12 @@ class ExecMethod_Request(NDRPacket):
             NDRPacketField("strMethodName", FLAGGED_WORD_BLOB(), FLAGGED_WORD_BLOB)
         ),
         NDRSignedIntField("lFlags", 0),
-        NDRPacketField("pCtx", MInterfacePointer(), MInterfacePointer),
-        NDRPacketField("pInParams", MInterfacePointer(), MInterfacePointer),
+        NDRFullPointerField(
+            NDRPacketField("pCtx", MInterfacePointer(), MInterfacePointer),
+        ),
+        NDRFullPointerField(
+            NDRPacketField("pInParams", MInterfacePointer(), MInterfacePointer),
+        ),
         NDRFullPointerField(
             NDRFullPointerField(
                 NDRPacketField("ppOutParams", MInterfacePointer(), MInterfacePointer)
