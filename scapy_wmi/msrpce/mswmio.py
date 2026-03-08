@@ -83,7 +83,11 @@ class ENCODED_STRING(Packet):
         super().add_payload(payload)
 
     def post_build(self, p, pay):
-        return p + pay + b"\x00"
+        if isinstance(self.payload, ENCODED_STRING8):
+            return p + pay + b"\x00"
+        else:
+            return p + pay + b"\x00\x00"
+            
 
 
 WBEM_FLAVOR_FLAG_PROPAGATE_O_INSTANCE = 0x01
