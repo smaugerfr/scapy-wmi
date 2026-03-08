@@ -3,6 +3,7 @@ from scapy.config import conf
 conf.load_extensions.append("scapy-wmi")
 conf.exts.loadall()
 
+from scapy_wmi.wmiclient import IWbemClassObject
 from scapy.layers.ntlm import NTLMSSP
 from scapy.layers.spnego import SPNEGOSSP
 from scapy.layers.wmiclient import wmiclient
@@ -21,10 +22,12 @@ if __name__ == "__main__":
         ]
     )
 
-    wmiclient("192.168.100.100", ssp=ntlmssp, debug=0, REQUIRE_ENCRYPTION=True)
+    # wmiclient("192.168.100.100", ssp=ntlmssp, debug=0, REQUIRE_ENCRYPTION=True)
 
-    # cli = wmiclient(
-    #     "192.168.100.100", ssp=ssp, debug=0, REQUIRE_ENCRYPTION=False, cli=False
-    # )
-    # ptr = cli.client.getObject("Win32_Process", cli.objref_wmi)
-    # IWbemClassObject(ptr, cli.client).Create("cmd.exe /Q /c whoami", "C:\\", None)
+    cli = wmiclient(
+        "192.168.100.100", ssp=ssp, debug=0, REQUIRE_ENCRYPTION=False, cli=False
+    )
+    ptr = cli.client.getObject("Win32_Process", cli.objref_wmi)
+    IWbemClassObject(ptr, cli.client).Create(r"cmd.exe /Q /c whoami /all > C:\test_scapy_wmi.txt", "C:\\", None)
+
+    cli.close()

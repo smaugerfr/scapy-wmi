@@ -365,13 +365,18 @@ class WMI_Client(DCOM_Client):
             result_query.show()
             raise ValueError("ExecMethod failed !")
 
-        result_query.show()
         if (
             result_query.ppOutParams is None
             and pktctr.pInParams is not None
             and pktctr.lFlags != 0x00000010
         ):
-            print("Error despite response")
+            result_query.show()
+            raise ValueError("Error despite response")
+
+        resObj = OBJREF(result_query.ppOutParams.value.value.abData)
+        enc: ENCODING_UNIT = ENCODING_UNIT(resObj.pObjectData.load)
+        enc.ObjectBlock.parseObject()
+        enc.ObjectBlock.printInformation()
 
     def get_query_result(self, obj_ppEnum: ObjectInstance) -> list[MInterfacePointer]:
         op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
