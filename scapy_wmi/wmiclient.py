@@ -37,12 +37,10 @@ from scapy_wmi.msrpce.mswmio import (
     INSTANCE_TYPE,
     ENCODED_STRING,
     CLASS_HEAP,
-    CURRENT_CLASS_NO_METHODS,
     INSTANCE_QUALIFIER_SET,
     build_argument,
 )
 from scapy_wmi.types.wmi_classes import WMI_Class
-from scapy.packet import Packet
 
 # TODO
 # Implement shell
@@ -128,7 +126,7 @@ class IWbemClassObject:
                     ValueTable.append(b)
                     NdTable = NdTable | c << 2 * i
 
-                objBlk_raw_in: OBJECT_BLOCK = methodDefinition["OutParamsRaw"]
+                objBlk_raw_in: OBJECT_BLOCK = methodDefinition["InParamsRaw"]
                 class_part: CLASS_PART = (
                     objBlk_raw_in.Encoding.CurrentClass.ClassPart.copy()
                 )
@@ -140,8 +138,9 @@ class IWbemClassObject:
                         length=(len(args) - 1) // 4 + 1, byteorder="little"
                     ),
                     InstanceData=b"".join(ValueTable),
-                    InstanceQualifierSet=INSTANCE_QUALIFIER_SET()
-                    / b"\x04\x00\x00\x00\x01",
+                    InstanceQualifierSet=INSTANCE_QUALIFIER_SET(
+                        b"\x04\x00\x00\x00\x01"
+                    ),
                     InstanceHeap=CLASS_HEAP() / instanceHeap,
                 )
 
@@ -153,14 +152,16 @@ class IWbemClassObject:
                 objRefCustom = OBJREF(iid=self.objRef.iid) / (
                     OBJREF_CUSTOM(
                         clsid="4590F812-1D3A-11D0-891F-00AA004B2E24",
+                        pObjectData=encodingUnit,
                     )
-                    / encodingUnit
                 )
             else:
                 # No param null pointer
                 objRefCustom = None
 
-            self.client.execMethod(className+"\0", methodDefinition["name"]+"\0", objRefCustom)
+            self.client.execMethod(
+                className + "\0", methodDefinition["name"] + "\0", objRefCustom
+            )
 
         for methodName in methods:
             innerMethod.__name__ = methodName
@@ -323,6 +324,11 @@ class WMI_Client(DCOM_Client):
         obj: OBJREF | None,
         objref_wmi: ObjectInstance | None = None,
     ):
+        inParams = NDRPointer(
+            referent_id=0x72657355,
+            value=MInterfacePointer(max_count=len(bytes(obj)), abData=bytes(obj)),
+        )
+
         pktctr = ExecMethod_Request(
             strObjectPath=NDRPointer(
                 referent_id=0x72657355,
@@ -342,10 +348,8 @@ class WMI_Client(DCOM_Client):
                     asData=method.encode("utf-16le"),
                 ),
             ),
-            pInParams=NDRPointer(
-                referent_id=0x72657355,
-                value=MInterfacePointer(max_count=len(bytes(obj)), abData=obj),
-            ),
+            pInParams=inParams,
+            ppOutParams=NDRPointer(referent_id=0x72657355, value=None),
         )
 
         if objref_wmi is None:
@@ -360,6 +364,14 @@ class WMI_Client(DCOM_Client):
         if not isinstance(result_query, ExecMethod_Response):
             result_query.show()
             raise ValueError("ExecMethod failed !")
+
+        result_query.show()
+        if (
+            result_query.ppOutParams is None
+            and pktctr.pInParams is not None
+            and pktctr.lFlags != 0x00000010
+        ):
+            print("Error despite response")
 
     def get_query_result(self, obj_ppEnum: ObjectInstance) -> list[MInterfacePointer]:
         op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
