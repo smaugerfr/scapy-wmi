@@ -511,8 +511,9 @@ class CLASS_HEAP(Packet):
         return b"", s
 
     def post_build(self, pkt, pay):
+        # Compute HeapLength, read [MS-WMIO] 2.2.66 Heap
         if self.HeapLength is None and pay:
-            l = len(pay)
+            l = len(pay) | 0x80000000
             pkt = l.to_bytes(length=4, byteorder="little")
         return pkt + pay
 
@@ -804,8 +805,8 @@ class INSTANCE_TYPE(Packet):
     fields_desc = [
         PacketField("CurrentClass", None, CURRENT_CLASS_NO_METHODS),
         LEIntField("EncodingLength", None),  # 2.2.73 EncodingLength
-        ByteField("InstanceFlags", None),  # 2.2.54 InstanceFlags
-        LEIntField("InstanceClassName", None),  # 2.2.69 HeapRef
+        ByteField("InstanceFlags", 0x00),  # 2.2.54 InstanceFlags
+        LEIntField("InstanceClassName", 0x00000000),  # 2.2.69 HeapRef
         StrLenField(
             "NdTable",
             b"",
@@ -880,6 +881,7 @@ class INSTANCE_TYPE(Packet):
         return b"", s
 
     def post_build(self, pkt, pay):
+        # Compute EncodingLength
         if self.EncodingLength is None and self.CurrentClass is not None:
             currClassLen = len(self.CurrentClass)
             pkt = (
