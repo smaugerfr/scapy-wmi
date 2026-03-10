@@ -5,7 +5,7 @@
 
 from enum import Enum
 import struct
-from typing import Optional, OrderedDict, Self
+from typing import Callable, Optional, OrderedDict
 from scapy.packet import Packet, Raw
 from scapy.fields import (
     StrLenField,
@@ -22,7 +22,7 @@ from scapy.fields import (
     LESignedIntField,
     LESignedLongField,
     LELongField,
-    ThreeBytesField,
+    Field,
 )
 
 
@@ -139,23 +139,23 @@ class CIM_TYPE_ENUM(Enum):
     CIM_ARRAY_OBJECT = 8205
 
 
-CIM_TYPES_REF = {
-    CIM_TYPE_ENUM.CIM_TYPE_SINT8.value: lambda name: SignedByteField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_UINT8.value: lambda name: ByteField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_SINT16.value: lambda name: LESignedShortField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_UINT16.value: lambda name: LEShortField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_SINT32.value: lambda name: LESignedIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_UINT32.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_SINT64.value: lambda name: LESignedLongField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_UINT64.value: lambda name: LELongField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_REAL32.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_REAL64.value: lambda name: LELongField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_BOOLEAN.value: lambda name: LEShortField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_STRING.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_DATETIME.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_REFERENCE.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_CHAR16.value: lambda name: LEShortField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value: lambda name: LEIntField(name, 0),
+CIM_TYPES_REF: dict[int, Callable[[str], Field]] = {
+    CIM_TYPE_ENUM.CIM_TYPE_SINT8.value: lambda name: SignedByteField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_UINT8.value: lambda name: ByteField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_SINT16.value: lambda name: LESignedShortField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_UINT16.value: lambda name: LEShortField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_SINT32.value: lambda name: LESignedIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_UINT32.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_SINT64.value: lambda name: LESignedLongField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_UINT64.value: lambda name: LELongField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_REAL32.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_REAL64.value: lambda name: LELongField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_BOOLEAN.value: lambda name: LEShortField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_STRING.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_DATETIME.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_REFERENCE.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_CHAR16.value: lambda name: LEShortField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value: lambda name: LEIntField(name, None),
 }
 
 CIM_TYPE_TO_NAME = {
@@ -733,13 +733,16 @@ class CLASS_AND_METHODS_PART(Packet):
         if pClassName == 0xFFFFFFFF:
             return "None"
         else:
-            className: str = ENCODED_STRING(cHeap[pClassName:]).str_value()
-            derivationList = self.ClassPart.DerivationList.ClassNameEncoding
-            while len(derivationList) > 0:
-                superClass: ENCODED_STRING = ENCODED_STRING(derivationList)
-                className += " : %s " % superClass.str_value()
-                derivationList = derivationList[superClass.bytes_len() + 4 :]
-            return className
+            return ENCODED_STRING(cHeap[pClassName:]).str_value()
+        
+    def getSuperclassesInheritance(self) -> list[str]:
+        inheritance = [self.getClassName()]
+        derivationList = self.ClassPart.DerivationList.ClassNameEncoding
+        while len(derivationList) > 0:
+            superClass: ENCODED_STRING = ENCODED_STRING(derivationList)
+            inheritance.append(superClass.str_value())
+            derivationList = derivationList[superClass.bytes_len() + 4 :]
+        return inheritance
 
     def getQualifiers(self):
         return self.ClassPart.getQualifiers()
@@ -939,7 +942,7 @@ class OBJECT_BLOCK(Packet):
             # The object is a CIM instance
             cim_instance: INSTANCE_TYPE = self.Encoding
             ctCurrent: CLASS_AND_METHODS_PART = cim_instance.CurrentClass
-            currentName = ctCurrent.getClassName()
+            currentName = " : ".join(ctCurrent.getSuperclassesInheritance())
             if currentName is not None:
                 self.ctCurrent = self.parseClass(ctCurrent, cim_instance)
             return
@@ -949,11 +952,11 @@ class OBJECT_BLOCK(Packet):
             ctParent: CLASS_AND_METHODS_PART = cim_class.ParentClass
             ctCurrent: CLASS_AND_METHODS_PART = cim_class.CurrentClass
 
-            parentName = ctParent.getClassName()
+            parentName = " : ".join(ctParent.getSuperclassesInheritance())
             if parentName is not None:
                 self.ctParent = self.parseClass(ctParent)
 
-            currentName = ctCurrent.getClassName()
+            currentName = " : ".join(ctCurrent.getSuperclassesInheritance())
             if currentName is not None:
                 self.ctCurrent = self.parseClass(ctCurrent)
 
@@ -961,7 +964,7 @@ class OBJECT_BLOCK(Packet):
         self, pClass: CLASS_AND_METHODS_PART, cInstance: INSTANCE_TYPE = None
     ):
         classDict = OrderedDict()
-        classDict["name"] = pClass.getClassName()
+        classDict["name"] = " : ".join(pClass.getSuperclassesInheritance())
         classDict["qualifiers"] = pClass.getQualifiers()
         classDict["properties"] = pClass.getProperties()
         classDict["methods"] = pClass.getMethods()
@@ -984,7 +987,7 @@ class OBJECT_BLOCK(Packet):
         for qualifier in qualifiers:
             print("[%s]" % qualifier)
 
-        className = pClass.getClassName()
+        className = " : ".join(pClass.getSuperclassesInheritance())
 
         print("class %s \n{" % className)
 
@@ -1082,7 +1085,7 @@ class OBJECT_BLOCK(Packet):
             # The object is a CIM instance
             cim_instance: INSTANCE_TYPE = self.Encoding
             ctCurrent: CLASS_AND_METHODS_PART = cim_instance.CurrentClass
-            currentName = ctCurrent.getClassName()
+            currentName = " : ".join(ctCurrent.getSuperclassesInheritance())
             if currentName is not None:
                 self.printClass(ctCurrent, cim_instance)
             return
@@ -1092,11 +1095,11 @@ class OBJECT_BLOCK(Packet):
             ctParent: CLASS_AND_METHODS_PART = cim_class.ParentClass
             ctCurrent: CLASS_AND_METHODS_PART = cim_class.CurrentClass
 
-            parentName = ctParent.getClassName()
+            parentName = " : ".join(ctParent.getSuperclassesInheritance())
             if parentName is not None:
                 self.printClass(ctParent)
 
-            currentName = ctCurrent.getClassName()
+            currentName = " : ".join(ctCurrent.getSuperclassesInheritance())
             if currentName is not None:
                 self.printClass(ctCurrent)
 
@@ -1161,7 +1164,8 @@ def build_argument(paramDefinition, arg, curHeapPtr: int) -> tuple[bytes, int, i
         CIM_TYPE_ENUM.CIM_TYPE_REFERENCE.value,
         CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value,
     ):
-        raise ValueError("Not implemented case")
+        ftype = CIM_TYPES_REF[pType]("arg")
+        return (struct.pack(ftype.fmt, arg), curHeapPtr.to_bytes(length=4, byteorder="little"), 0)
     elif pType == CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value:
         if arg is None:
             # For now we just pack None and set the inherited_default
