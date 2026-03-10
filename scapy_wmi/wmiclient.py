@@ -61,34 +61,41 @@ class IWbemClassObject:
 
     fields_desc = []
 
-    def __init__(self, interface: MInterfacePointer, wmi_client):
+    def __init__(self, interface: MInterfacePointer, wmi_client: "WMI_Client"):
+        self.client = wmi_client
         self.objRef = OBJREF(interface.abData)
 
         self.encodingUnit: ENCODING_UNIT = ENCODING_UNIT(self.objRef.pObjectData.load)
         self.encodingUnit.ObjectBlock.parseObject()
 
-        self.client = wmi_client
         if self.encodingUnit.ObjectBlock.isInstance():
-            raise ValueError("This is an instance")
+            # get object CIM class
+            cim_class = self.encodingUnit.ObjectBlock.Encoding.CurrentClass.getClassName()
+            relpath = self.encodingUnit.ObjectBlock.Encoding.get_rel_path()
+            ptr = self.client.getObject(cim_class, wmi_client.current_namespace)
+            self.objRef = OBJREF(ptr.abData)
+
+            self.encodingUnit: ENCODING_UNIT = ENCODING_UNIT(self.objRef.pObjectData.load)
+            self.encodingUnit.ObjectBlock.parseObject()
+
+            self.createMethods(relpath, self.getMethods())
         else:
             self.createMethods(self.getClassName(), self.getMethods())
 
     def getClassName(self) -> str:
-        return self.encodingUnit.ObjectBlock.Encoding.CurrentClass.getClassName().split(
-            " "
-        )[0]
+        return self.encodingUnit.ObjectBlock.Encoding.CurrentClass.getClassName()
 
     def getMethods(self):
-        if self.encodingUnit.ObjectBlock.ctCurrent is not None:
-            return self.encodingUnit.ObjectBlock.ctCurrent["methods"]
+        if self.encodingUnit.ObjectBlock.Encoding.parsedCurrent:
+            return self.encodingUnit.ObjectBlock.Encoding.parsedCurrent["methods"]
         return dict()
 
     def getProperties(self):
-        if self.encodingUnit.ObjectBlock.ctCurrent:
-            return self.encodingUnit.ObjectBlock.ctCurrent["properties"]
+        if self.encodingUnit.ObjectBlock.Encoding.parsedCurrent:
+            return self.encodingUnit.ObjectBlock.Encoding.parsedCurrent["properties"]
         return dict()
 
-    def createMethods(self, className: str, methods: dict):
+    def createMethods(self, objectPath: str, methods: dict):
         class FunctionPool:
             def __init__(self, function):
                 self.function = function
@@ -98,7 +105,7 @@ class IWbemClassObject:
 
         @FunctionPool
         def innerMethod(staticArgs, *args):
-            className: str = staticArgs[0]
+            objectPath: str = staticArgs[0]
             methodDefinition: dict = staticArgs[1]
 
             objRefCustom: OBJREF_CUSTOM | None
@@ -160,13 +167,13 @@ class IWbemClassObject:
                 objRefCustom = None
 
             self.client.execMethod(
-                className + "\0", methodDefinition["name"] + "\0", objRefCustom
+                objectPath + "\0", methodDefinition["name"] + "\0", objRefCustom
             )
 
         for methodName in methods:
             innerMethod.__name__ = methodName
             setattr(
-                self, innerMethod.__name__, innerMethod[className, methods[methodName]]
+                self, innerMethod.__name__, innerMethod[objectPath, methods[methodName]]
             )
 
 
