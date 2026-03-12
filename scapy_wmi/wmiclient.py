@@ -94,6 +94,9 @@ class IWbemClassObject:
         if self.encodingUnit.ObjectBlock.Encoding.parsedCurrent:
             return self.encodingUnit.ObjectBlock.Encoding.parsedCurrent["properties"]
         return dict()
+    
+    def printInformation(self):
+        self.encodingUnit.ObjectBlock.printInformation()
 
     def createMethods(self, objectPath: str, methods: dict):
         class FunctionPool:
@@ -464,7 +467,7 @@ class WMI_Client(DCOM_Client):
                             )
                             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
                             objBlk.parseObject()
-                            record = objBlk.ctCurrent["properties"]
+                            record = objBlk.Encoding.parsedCurrent["properties"]
                             objects.append(WMI_Class(record))
         return objects
 
@@ -564,7 +567,7 @@ class wmiclient(CLIUtil):
         self.client.close()
         print("Connection closed")
 
-    @CLIUtil.addcommand(spaces=True)
+    @CLIUtil.addcommand(mono=True)
     def query(self, raw_query: str):
         ppEnum = self.client.query(self._parsequery(raw_query), self.objref_wmi)
         interfaces = self.client.get_query_result(ppEnum)
@@ -595,7 +598,7 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            record = objBlk.ctCurrent["properties"]
+            record = objBlk.Encoding.parsedCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
             for col in record:
@@ -629,7 +632,7 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            record = objBlk.ctCurrent["properties"]
+            record = objBlk.Encoding.parsedCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
             for col in record:
@@ -732,12 +735,13 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            name = objBlk.ctCurrent["name"].split(" : ")[0]
-            self._update_class_cache(name, objBlk)
-            methods = objBlk.ctCurrent["methods"].keys()
-            properties = objBlk.ctCurrent["properties"].keys()
-            print(
-                f"{name[:31] + "..." if len(name) > 34 else name:<34}",
-                f"{"{"+textwrap.shorten(", ".join(methods), 34, placeholder="...", break_long_words=True)+"}":<34}",
-                f"{"{"+textwrap.shorten(", ".join(properties), 34, placeholder="...", break_long_words=True)+"}":<34}",
-            )
+            name = objBlk.Encoding.CurrentClass.getClassName()
+            if name:
+                self._update_class_cache(name, objBlk)
+                methods = objBlk.Encoding.parsedCurrent["methods"].keys()
+                properties = objBlk.Encoding.parsedCurrent["properties"].keys()
+                print(
+                    f"{name[:31] + "..." if len(name) > 34 else name:<34}",
+                    f"{"{"+textwrap.shorten(", ".join(methods), 34, placeholder="...", break_long_words=True)+"}":<34}",
+                    f"{"{"+textwrap.shorten(", ".join(properties), 34, placeholder="...", break_long_words=True)+"}":<34}",
+                )
