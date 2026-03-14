@@ -1,12 +1,16 @@
 from scapy.config import conf
+
 conf.load_extensions.append("scapy-wmi")
 conf.exts.loadall()
+
+from scapy_wmi.wmiclient import IWbemClassObject
 from scapy.layers.ntlm import NTLMSSP
 from scapy.layers.spnego import SPNEGOSSP
 from scapy.layers.wmiclient import wmiclient
 
 
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from scapy_wmi.wmiclient import wmiclient
 

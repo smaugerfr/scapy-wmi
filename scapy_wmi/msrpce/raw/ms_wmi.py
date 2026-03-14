@@ -76,7 +76,7 @@ register_com_interface(
 
 
 class FLAGGED_WORD_BLOB(NDRPacket):
-    ALIGNMENT = (4, 8)
+    ALIGNMENT = (4, 4)
     DEPORTED_CONFORMANTS = ["asData"]
     fields_desc = [
         NDRIntField("cBytes", 0),
@@ -88,7 +88,7 @@ class FLAGGED_WORD_BLOB(NDRPacket):
 
 
 class MInterfacePointer(NDRPacket):
-    ALIGNMENT = (4, 8)
+    ALIGNMENT = (4, 4)
     DEPORTED_CONFORMANTS = ["abData"]
     fields_desc = [
         NDRIntField("ulCntData", None, size_of="abData"),
@@ -527,8 +527,12 @@ class ExecMethod_Request(NDRPacket):
             NDRPacketField("strMethodName", FLAGGED_WORD_BLOB(), FLAGGED_WORD_BLOB)
         ),
         NDRSignedIntField("lFlags", 0),
-        NDRPacketField("pCtx", MInterfacePointer(), MInterfacePointer),
-        NDRPacketField("pInParams", MInterfacePointer(), MInterfacePointer),
+        NDRFullPointerField(
+            NDRPacketField("pCtx", MInterfacePointer(), MInterfacePointer),
+        ),
+        NDRFullPointerField(
+            NDRPacketField("pInParams", MInterfacePointer(), MInterfacePointer),
+        ),
         NDRFullPointerField(
             NDRFullPointerField(
                 NDRPacketField("ppOutParams", MInterfacePointer(), MInterfacePointer)
@@ -621,7 +625,7 @@ class Indicate_Request(NDRPacket):
             [],
             MInterfacePointer,
             size_is=lambda pkt: pkt.lObjectCount,
-            ptr_pack=True,
+            ptr_lvl=1,
         ),
     ]
 
@@ -678,7 +682,7 @@ class Next_Response(NDRPacket):
             MInterfacePointer,
             size_is=lambda pkt: pkt.uCount,
             length_is=lambda pkt: pkt.puReturned,
-            ptr_pack=True,
+            ptr_lvl=1,
         ),
         NDRIntField("puReturned", None, size_of="apObjects"),
         NDRIntField("status", 0),
@@ -1030,7 +1034,7 @@ class RemoteRefresh_Response(NDRPacket):
             [],
             WBEM_REFRESHED_OBJECT,
             size_is=lambda pkt: pkt.plNumObjects,
-            ptr_pack=True,
+            ptr_lvl=1,
         ),
         NDRIntField("status", 0),
     ]
@@ -1351,7 +1355,6 @@ class Next_Response(NDRPacket):
             [],
             NDRFullPointerField(NDRSignedByteField("", 0)),
             size_is=lambda pkt: pkt.pdwBuffSize,
-            ptr_pack=True,
         ),
         NDRIntField("status", 0),
     ]

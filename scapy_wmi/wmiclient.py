@@ -1,3 +1,4 @@
+from functools import partial
 import uuid
 from scapy.utils import (
     CLIUtil,
@@ -11,7 +12,12 @@ from scapy.layers.dcerpc import (
     NDRPointer,
     RPC_C_IMP_LEVEL,
 )
-from scapy.layers.msrpce.msdcom import DCOM_Client, ObjectInstance, OBJREF
+from scapy.layers.msrpce.msdcom import (
+    DCOM_Client,
+    ObjectInstance,
+    OBJREF,
+    OBJREF_CUSTOM,
+)
 from scapy_wmi.msrpce.raw.ms_wmi import (
     NTLMLogin_Request,
     FLAGGED_WORD_BLOB,
@@ -21,8 +27,20 @@ from scapy_wmi.msrpce.raw.ms_wmi import (
     MInterfacePointer,
     GetObject_Request,
     GetObject_Response,
+    ExecMethod_Request,
+    ExecMethod_Response,
 )
-from scapy_wmi.msrpce.mswmio import ENCODING_UNIT, OBJECT_BLOCK
+from scapy_wmi.msrpce.mswmio import (
+    CLASS_PART,
+    ENCODING_UNIT,
+    OBJECT_BLOCK,
+    INSTANCE_TYPE,
+    ENCODED_STRING,
+    CLASS_HEAP,
+    INSTANCE_QUALIFIER_SET,
+    build_argument,
+    CLASS_AND_METHODS_PART,
+)
 from scapy_wmi.types.wmi_classes import WMI_Class
 
 # TODO
@@ -30,6 +48,155 @@ from scapy_wmi.types.wmi_classes import WMI_Class
 # Fix ExecQuery with SSP Kerberos
 # SSPNEGO, fix two ssp
 # Implement class, filter
+
+
+class IWbemClassObject:
+    """
+    The IWbemClassObject interface represents a WMI object, such as a WMI class or an object
+    instance. All CIM objects (CIM classes and CIM instances) that are passed during WMI calls
+    between the client and server are objects of this interface
+    """
+
+    encodingUnit: ENCODING_UNIT
+    objRef: OBJREF
+
+    fields_desc = []
+
+    def __init__(self, interface: MInterfacePointer, wmi_client: "WMI_Client"):
+        self.client = wmi_client
+        self.objRef = OBJREF(interface.abData)
+
+        self.encodingUnit: ENCODING_UNIT = ENCODING_UNIT(self.objRef.pObjectData.load)
+        self.encodingUnit.ObjectBlock.parseObject()
+
+        if self.encodingUnit.ObjectBlock.isInstance():
+            # get object CIM class
+            cim_class = (
+                self.encodingUnit.ObjectBlock.Encoding.CurrentClass.getClassName()
+            )
+            relpath = self.encodingUnit.ObjectBlock.Encoding.get_rel_path()
+            ptr = self.client.getObject(cim_class, wmi_client.current_namespace)
+            self.objRef = OBJREF(ptr.abData)
+
+            self.encodingUnit: ENCODING_UNIT = ENCODING_UNIT(
+                self.objRef.pObjectData.load
+            )
+            self.encodingUnit.ObjectBlock.parseObject()
+
+            self.createMethods(relpath, self.getMethods())
+        else:
+            self.createMethods(self.getClassName(), self.getMethods())
+
+    def getClassName(self) -> str:
+        return self.encodingUnit.ObjectBlock.Encoding.CurrentClass.getClassName()
+
+    def getMethods(self):
+        if self.encodingUnit.ObjectBlock.Encoding.parsedCurrent:
+            return self.encodingUnit.ObjectBlock.Encoding.parsedCurrent["methods"]
+        return dict()
+
+    def getProperties(self):
+        if self.encodingUnit.ObjectBlock.Encoding.parsedCurrent:
+            return self.encodingUnit.ObjectBlock.Encoding.parsedCurrent["properties"]
+        return dict()
+
+    def printInformation(self):
+        self.encodingUnit.ObjectBlock.printInformation()
+
+    def getMethodsDict(self):
+        res = []
+        methods = self.getMethods()
+        for methodName in methods:
+            res.append(
+                (
+                    methodName,
+                    CLASS_AND_METHODS_PART.method_flat_str(
+                        methodName, methods[methodName]
+                    ),
+                )
+            )
+        return res
+
+    def createMethods(self, objectPath: str, methods: dict):
+        class FunctionPool:
+            def __init__(self, function):
+                self.function = function
+
+            def __getitem__(self, item):
+                return partial(self.function, item)
+
+        @FunctionPool
+        def innerMethod(staticArgs, *args):
+            objectPath: str = staticArgs[0]
+            methodDefinition: dict = staticArgs[1]
+
+            objRefCustom: OBJREF_CUSTOM | None
+            # Create an object ref for the in param
+            if methodDefinition["InParams"] is not None:
+                if len(args) != len(methodDefinition["InParams"]):
+                    raise ValueError(
+                        "Function called with %d parameters instead of %d!"
+                        % (len(args), len(methodDefinition["InParams"]))
+                    )
+                # Create encoding unit
+                parametersClass: ENCODED_STRING = ENCODED_STRING() / "__PARAMETERS"
+                instanceHeap = b""
+                instanceHeap += bytes(parametersClass)
+
+                # Index of each element in instance heap
+                ValueTable: list[int] = []
+                NdTable: int = 0
+
+                for i, arg in enumerate(args):
+                    paramDefinition = list(methodDefinition["InParams"].values())[i]
+
+                    (a, b, c) = build_argument(paramDefinition, arg, len(instanceHeap))
+                    instanceHeap += a
+                    ValueTable.append(b)
+                    NdTable = NdTable | c << 2 * i
+
+                objBlk_raw_in: OBJECT_BLOCK = methodDefinition["InParamsRaw"]
+                class_part: CLASS_PART = (
+                    objBlk_raw_in.Encoding.CurrentClass.ClassPart.copy()
+                )
+                class_part.ClassHeader.EncodingLength = len(bytes(class_part))
+
+                instanceType = INSTANCE_TYPE(
+                    CurrentClass=class_part,
+                    NdTable=NdTable.to_bytes(
+                        length=(len(args) - 1) // 4 + 1, byteorder="little"
+                    ),
+                    InstanceData=b"".join(ValueTable),
+                    InstanceQualifierSet=INSTANCE_QUALIFIER_SET(
+                        b"\x04\x00\x00\x00\x01"
+                    ),
+                    InstanceHeap=CLASS_HEAP() / instanceHeap,
+                )
+
+                encodingUnit = (
+                    ENCODING_UNIT() / OBJECT_BLOCK(ObjectFlags=0x02) / instanceType
+                )
+
+                # Create objectref custom
+                objRefCustom = OBJREF(iid=self.objRef.iid) / (
+                    OBJREF_CUSTOM(
+                        clsid="4590F812-1D3A-11D0-891F-00AA004B2E24",
+                        pObjectData=encodingUnit,
+                    )
+                )
+            else:
+                # No param null pointer
+                objRefCustom = None
+
+            self.client.execMethod(
+                objectPath + "\0", methodDefinition["name"] + "\0", objRefCustom
+            )
+
+        for methodName in methods:
+            innerMethod.__name__ = methodName
+            setattr(
+                self, innerMethod.__name__, innerMethod[objectPath, methods[methodName]]
+            )
 
 
 class WMI_Client(DCOM_Client):
@@ -85,6 +252,7 @@ class WMI_Client(DCOM_Client):
     def set_namespace(self, namespace_str: str = "root/cimv2") -> None:
         objref_wmi = self.get_namespace(namespace_str)
         self.current_namespace = objref_wmi
+        return objref_wmi
 
     def query(
         self, query: str, objref_wmi: ObjectInstance | None = None
@@ -136,8 +304,7 @@ class WMI_Client(DCOM_Client):
 
     def getObject(
         self, objectPath: str, objref_wmi: ObjectInstance | None = None
-    ) -> OBJREF:
-        null_val_ptr = MInterfacePointer(max_count=0, ulCntData=0)
+    ) -> MInterfacePointer:
         pktctr = GetObject_Request(
             strObjectPath=NDRPointer(
                 referent_id=0x72657355,
@@ -148,11 +315,15 @@ class WMI_Client(DCOM_Client):
                     asData=objectPath.encode("utf-16le"),
                 ),
             ),
-            # lFlags=0x00000010,
             pCtx=NDRPointer(
                 referent_id=0,
-                value=NDRPointer(referent_id=0x72657355, value=null_val_ptr),
+                value=NDRPointer(
+                    referent_id=0x72657355,
+                    value=MInterfacePointer(max_count=0, ulCntData=0),
+                ),
             ),
+            ppObject=None,
+            ppCallResult=None,
         )
 
         if objref_wmi is None:
@@ -171,13 +342,80 @@ class WMI_Client(DCOM_Client):
         if result_query.ppObject is None:
             raise ValueError("Returned object pointer is NULL")
 
-        ppEnum_value: MInterfacePointer = (
-            result_query.ppObject.value.value
-        ) 
+        ppEnum_value: MInterfacePointer = result_query.ppObject.value.value
 
-        obj_ = OBJREF(ppEnum_value.abData)
+        return ppEnum_value
 
-        return obj_
+    def execMethod(
+        self,
+        objectPath: str,
+        method: str,
+        obj: OBJREF | None,
+        objref_wmi: ObjectInstance | None = None,
+    ):
+        if obj:
+            inParams = NDRPointer(
+                referent_id=0x72657355,
+                value=MInterfacePointer(max_count=len(bytes(obj)), abData=bytes(obj)),
+            )
+        else:
+            inParams = NDRPointer(
+                referent_id=0x72657355,
+                value=MInterfacePointer(max_count=0),
+            )
+
+        pktctr = ExecMethod_Request(
+            strObjectPath=NDRPointer(
+                referent_id=0x72657355,
+                value=FLAGGED_WORD_BLOB(
+                    max_count=len(objectPath),
+                    cBytes=len(objectPath) * 2,
+                    clSize=len(objectPath),
+                    asData=objectPath.encode("utf-16le"),
+                ),
+            ),
+            strMethodName=NDRPointer(
+                referent_id=0x72657355,
+                value=FLAGGED_WORD_BLOB(
+                    max_count=len(method),
+                    cBytes=len(method) * 2,
+                    clSize=len(method),
+                    asData=method.encode("utf-16le"),
+                ),
+            ),
+            pInParams=inParams,
+            ppOutParams=NDRPointer(referent_id=0x72657355, value=None),
+        )
+
+        if objref_wmi is None:
+            objref_wmi = self.current_namespace
+
+        result_query = objref_wmi.sr1_req(
+            pkt=pktctr,
+            iface=find_com_interface("IWbemServices"),
+            auth_level=self.auth_level,
+        )
+
+        if not isinstance(result_query, ExecMethod_Response):
+            result_query.show()
+            raise ValueError("ExecMethod failed !")
+
+        if (
+            result_query.ppOutParams is None
+            and pktctr.pInParams is not None
+            and pktctr.lFlags != 0x00000010
+        ):
+            result_query.show()
+            raise ValueError("Error despite response")
+
+        if result_query.status == 0:
+            resObj = OBJREF(result_query.ppOutParams.value.value.abData)
+            enc: ENCODING_UNIT = ENCODING_UNIT(resObj.pObjectData.load)
+            enc.ObjectBlock.parseObject()
+            enc.ObjectBlock.printInformation()
+        else:
+            result_query.show()
+            raise ValueError("Error returned")
 
     def get_query_result(self, obj_ppEnum: ObjectInstance) -> list[MInterfacePointer]:
         op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
@@ -258,7 +496,7 @@ class WMI_Client(DCOM_Client):
                             )
                             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
                             objBlk.parseObject()
-                            record = objBlk.ctCurrent["properties"]
+                            record = objBlk.Encoding.parsedCurrent["properties"]
                             objects.append(WMI_Class(record))
         return objects
 
@@ -292,6 +530,7 @@ class wmiclient(CLIUtil):
     objref_wmi: ObjectInstance
     namespace_cache: dict[str, list[str]]
     classes_cache: dict[str, dict[str, OBJECT_BLOCK]]
+    last_result_cache: dict[str, OBJECT_BLOCK]
 
     def __init__(
         self,
@@ -340,10 +579,11 @@ class wmiclient(CLIUtil):
 
         self.namespace_cache = dict()
         self.classes_cache = dict()
+        self.last_result_cache = dict()
         # Create connection
         self.client = WMI_Client(ssp=ssp, auth_level=auth_level, verb=bool(debug))
         self.client.connect(target, timeout)
-        self.objref_wmi = self.client.get_namespace()
+        self.objref_wmi = self.client.set_namespace()
         self.current_namescape = "root/cimv2"
 
         # Start CLI
@@ -358,7 +598,7 @@ class wmiclient(CLIUtil):
         self.client.close()
         print("Connection closed")
 
-    @CLIUtil.addcommand(spaces=True)
+    @CLIUtil.addcommand(mono=True)
     def query(self, raw_query: str):
         ppEnum = self.client.query(self._parsequery(raw_query), self.objref_wmi)
         interfaces = self.client.get_query_result(ppEnum)
@@ -389,7 +629,8 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            record = objBlk.ctCurrent["properties"]
+            self.last_result_cache[objBlk.Encoding.get_rel_path()] = objBlk
+            record = objBlk.Encoding.parsedCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
             for col in record:
@@ -423,7 +664,8 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            record = objBlk.ctCurrent["properties"]
+            self.last_result_cache[objBlk.Encoding.get_rel_path()] = objBlk
+            record = objBlk.Encoding.parsedCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
             for col in record:
@@ -485,7 +727,8 @@ class wmiclient(CLIUtil):
         print("Switched to " + namespace)
 
     @CLIUtil.addcomplete(namespace)
-    def namespace_complete(self, namespace: str) -> list:
+    def namespace_complete(self, args: list) -> list:
+        namespace = args[0]
         if namespace.endswith("/") and namespace.startswith("root/"):
             return self._list_namespaces(namespace)
         elif not namespace.startswith("root"):
@@ -526,12 +769,58 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
-            name = objBlk.ctCurrent["name"].split(" : ")[0]
-            self._update_class_cache(name, objBlk)
-            methods = objBlk.ctCurrent["methods"].keys()
-            properties = objBlk.ctCurrent["properties"].keys()
-            print(
-                f"{name[:31] + "..." if len(name) > 34 else name:<34}",
-                f"{"{"+textwrap.shorten(", ".join(methods), 34, placeholder="...", break_long_words=True)+"}":<34}",
-                f"{"{"+textwrap.shorten(", ".join(properties), 34, placeholder="...", break_long_words=True)+"}":<34}",
-            )
+            name = objBlk.Encoding.CurrentClass.getClassName()
+            if name:
+                self._update_class_cache(name, objBlk)
+                methods = objBlk.Encoding.parsedCurrent["methods"].keys()
+                properties = objBlk.Encoding.parsedCurrent["properties"].keys()
+                print(
+                    f"{name[:31] + "..." if len(name) > 34 else name:<34}",
+                    f"{"{"+textwrap.shorten(", ".join(methods), 34, placeholder="...", break_long_words=True)+"}":<34}",
+                    f"{"{"+textwrap.shorten(", ".join(properties), 34, placeholder="...", break_long_words=True)+"}":<34}",
+                )
+
+    @CLIUtil.addcommand()
+    def exec(self, path: str) -> IWbemClassObject:
+        ptr = self.client.getObject(path, self.objref_wmi)
+        obj = IWbemClassObject(ptr, self.client)
+        return obj
+
+    @CLIUtil.addoutput(exec)
+    def exec_output(self, classObj: IWbemClassObject):
+        classObj.printInformation()
+        if len(classObj.getMethodsDict()) == 0:
+            print("No methods on this class")
+            return
+        # Propose select method
+        from prompt_toolkit.shortcuts import choice
+        from prompt_toolkit.formatted_text import HTML
+
+        result = choice(
+            message="Please choose a method:",
+            options=classObj.getMethodsDict(),
+            bottom_toolbar=HTML(
+                " Press <b>[Up]</b>/<b>[Down]</b> to select, <b>[Enter]</b> to accept."
+            ),
+        )
+        # Ask for args
+        from prompt_toolkit import prompt
+
+        args = prompt("Arguments for " + result + " : ")
+
+        args_array = map(str.strip, args.split(","))
+        method = getattr(classObj, result)
+        method(*args_array)
+
+    @CLIUtil.addcomplete(exec)
+    def exec_complete(self, args: list) -> list:
+        path = args[0]
+        cache = self.classes_cache.get(self.current_namescape)
+        if cache is not None:
+            classes = list(cache.keys()) + list(self.last_result_cache.keys())
+            print(self.last_result_cache.keys())
+            return [elt for elt in classes if elt.startswith(path)]
+        else:
+            return [
+                elt for elt in self.last_result_cache.keys() if elt.startswith(path)
+            ]

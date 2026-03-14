@@ -5,8 +5,8 @@
 
 from enum import Enum
 import struct
-from typing import Optional, OrderedDict, Self
-from scapy.packet import Packet
+from typing import Callable, Optional, OrderedDict
+from scapy.packet import Packet, Raw
 from scapy.fields import (
     StrLenField,
     LEIntField,
@@ -22,7 +22,7 @@ from scapy.fields import (
     LESignedIntField,
     LESignedLongField,
     LELongField,
-    ThreeBytesField
+    Field,
 )
 
 
@@ -76,13 +76,25 @@ class ENCODED_STRING(Packet):
         else:
             return len(p.value) + 1 + 1  # Flag len + Null byte
 
+    def add_payload(self, payload):
+        if isinstance(payload, Raw):
+            cls = self.guess_payload_class(payload)
+            payload = cls(payload.load)
+        super().add_payload(payload)
 
-WBEM_FLAVOR_FLAG_PROPAGATE_O_INSTANCE      = 0x01
+    def post_build(self, p, pay):
+        if isinstance(self.payload, ENCODED_STRING8):
+            return p + pay + b"\x00"
+        else:
+            return p + pay + b"\x00\x00"
+
+
+WBEM_FLAVOR_FLAG_PROPAGATE_O_INSTANCE = 0x01
 WBEM_FLAVOR_FLAG_PROPAGATE_O_DERIVED_CLASS = 0x02
-WBEM_FLAVOR_NOT_OVERRIDABLE                = 0x10
-WBEM_FLAVOR_ORIGIN_PROPAGATED              = 0x20
-WBEM_FLAVOR_ORIGIN_SYSTEM                  = 0x40
-WBEM_FLAVOR_AMENDED                        = 0x80
+WBEM_FLAVOR_NOT_OVERRIDABLE = 0x10
+WBEM_FLAVOR_ORIGIN_PROPAGATED = 0x20
+WBEM_FLAVOR_ORIGIN_SYSTEM = 0x40
+WBEM_FLAVOR_AMENDED = 0x80
 
 # 2.2.32 Inherited
 Inherited = 0x4000
@@ -126,23 +138,23 @@ class CIM_TYPE_ENUM(Enum):
     CIM_ARRAY_OBJECT = 8205
 
 
-CIM_TYPES_REF = {
-    CIM_TYPE_ENUM.CIM_TYPE_SINT8.value: lambda name: SignedByteField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_UINT8.value: lambda name: ByteField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_SINT16.value: lambda name: LESignedShortField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_UINT16.value: lambda name: LEShortField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_SINT32.value: lambda name: LESignedIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_UINT32.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_SINT64.value: lambda name: LESignedLongField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_UINT64.value: lambda name: LELongField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_REAL32.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_REAL64.value: lambda name: LELongField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_BOOLEAN.value: lambda name: LEShortField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_STRING.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_DATETIME.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_REFERENCE.value: lambda name: LEIntField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_CHAR16.value: lambda name: LEShortField(name, 0),
-    CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value: lambda name: LEIntField(name, 0),
+CIM_TYPES_REF: dict[int, Callable[[str], Field]] = {
+    CIM_TYPE_ENUM.CIM_TYPE_SINT8.value: lambda name: SignedByteField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_UINT8.value: lambda name: ByteField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_SINT16.value: lambda name: LESignedShortField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_UINT16.value: lambda name: LEShortField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_SINT32.value: lambda name: LESignedIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_UINT32.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_SINT64.value: lambda name: LESignedLongField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_UINT64.value: lambda name: LELongField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_REAL32.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_REAL64.value: lambda name: LELongField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_BOOLEAN.value: lambda name: LEShortField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_STRING.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_DATETIME.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_REFERENCE.value: lambda name: LEIntField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_CHAR16.value: lambda name: LEShortField(name, None),
+    CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value: lambda name: LEIntField(name, None),
 }
 
 CIM_TYPE_TO_NAME = {
@@ -501,6 +513,13 @@ class CLASS_HEAP(Packet):
     def extract_padding(self, s):
         return b"", s
 
+    def post_build(self, pkt, pay):
+        # Compute HeapLength, read [MS-WMIO] 2.2.66 Heap
+        if self.HeapLength is None and pay:
+            l = len(pay) | 0x80000000
+            pkt = l.to_bytes(length=4, byteorder="little")
+        return pkt + pay
+
 
 # 2.2.15 ClassPart
 class CLASS_PART(Packet):
@@ -509,17 +528,36 @@ class CLASS_PART(Packet):
     DerivationList: DERIVATION_LIST
     ClassQualifierSet: QUALIFIER_SET
     PropertyLookupTable: PROPERTY_LOOKUP_TABLE
-    NdTable_ValueTable: str
+    # The NdTable (section 2.2.26) indicates whether a particular CIM property
+    # has a default value that is locally defined in the current CIM class or
+    # whether the default is defined in a superclass
+    NdTable: Optional[str]
+    # The ValueTable (section 2.2.29) contains values inline for simple numeric properties, or
+    # references to the values in the ClassHeap (section 2.2.37) for all other specified values in the
+    # HeapItem rule, such as arrays or strings.
+    ValueTable: Optional[str]
     ClassHeap: CLASS_HEAP
     fields_desc = [
         PacketField("ClassHeader", None, CLASS_HEADER),
         PacketField("DerivationList", None, DERIVATION_LIST),
         PacketField("ClassQualifierSet", None, QUALIFIER_SET),
         PacketField("PropertyLookupTable", None, PROPERTY_LOOKUP_TABLE),
-        StrLenField(
-            "NdTable_ValueTable",
-            b"",
-            lambda pkt: pkt.ClassHeader.NdTableValueTableLength,
+        ConditionalField(
+            StrLenField(
+                "NdTable",
+                b"",
+                lambda pkt: (pkt.PropertyLookupTable.PropertyCount - 1) // 4 + 1,
+            ),
+            lambda pkt: pkt.PropertyLookupTable.PropertyCount > 0,
+        ),
+        ConditionalField(
+            StrLenField(
+                "ValueTable",
+                b"",
+                lambda pkt: pkt.ClassHeader.NdTableValueTableLength
+                - ((pkt.PropertyLookupTable.PropertyCount - 1) // 4 + 1),
+            ),
+            lambda pkt: pkt.PropertyLookupTable.PropertyCount > 0,
         ),
         PacketField("ClassHeap", None, CLASS_HEAP),
     ]
@@ -533,8 +571,9 @@ class CLASS_PART(Packet):
         sorted_props = sorted(
             list(properties.keys()), key=lambda k: properties[k]["order"]
         )
-        valueTableOff = (len(properties) - 1) // 4 + 1
-        valueTable = self.NdTable_ValueTable[valueTableOff:]
+        if self.ValueTable is None:
+            return OrderedDict()
+        valueTable = self.ValueTable
         for key in sorted_props:
             # Let's get the default Values
             pType = properties[key]["type"] & (~(CIM_ARRAY_FLAG | Inherited))
@@ -576,6 +615,7 @@ class CLASS_PART(Packet):
         rest = s[remaining:]
         return garbage, rest
 
+
 # 2.2.41 MethodDescription
 class METHOD_DESCRIPTION(Packet):
     MethodName: int
@@ -585,7 +625,7 @@ class METHOD_DESCRIPTION(Packet):
     MethodQualifiers: int
     InputSignature: int
     OutputSignature: int
-    
+
     fields_desc = [
         LEIntField("MethodName", None),
         ByteField("MethodFlags", None),
@@ -600,6 +640,8 @@ class METHOD_DESCRIPTION(Packet):
 
     def extract_padding(self, s):
         return b"", s
+
+
 # 2.2.38 MethodsPart
 class METHODS_PART(Packet):
     name = "MethodsPart"
@@ -612,13 +654,15 @@ class METHODS_PART(Packet):
         LEIntField("EncodingLength", None),
         LEShortField("MethodCount", None),
         LEShortField("MethodCountPadding", None),
-        StrLenField("MethodDescription", b"", length_from=lambda pkt: pkt.MethodCount*24),
+        StrLenField(
+            "MethodDescription", b"", length_from=lambda pkt: pkt.MethodCount * 24
+        ),
         PacketField("MethodHeap", None, CLASS_HEAP),
     ]
 
     def extract_padding(self, s):
         return b"", s
-    
+
     def getMethods(self):
         methods = OrderedDict()
         data = self.MethodDescription
@@ -631,30 +675,40 @@ class METHODS_PART(Packet):
                 # TODO
                 # raise ValueError("WBEM_FLAVOR_ORIGIN_PROPAGATED not yet supported!")
                 continue
-            methodDict['name'] = ENCODED_STRING(heap[itemn.MethodName:]).str_value()
-            methodDict['origin'] = itemn.MethodOrigin
-            if itemn.MethodQualifiers != 0xffffffff:
+            methodDict["name"] = ENCODED_STRING(heap[itemn.MethodName :]).str_value()
+            methodDict["origin"] = itemn.MethodOrigin
+            if itemn.MethodQualifiers != 0xFFFFFFFF:
                 # There are qualifiers
-                qualifiersSet: QUALIFIER_SET = QUALIFIER_SET(heap[itemn.MethodQualifiers:])
+                qualifiersSet: QUALIFIER_SET = QUALIFIER_SET(
+                    heap[itemn.MethodQualifiers :]
+                )
                 qualifiers = qualifiersSet.getQualifiers(heap)
-                methodDict['qualifiers'] = qualifiers
-            if itemn.InputSignature != 0xffffffff:
-                inputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(heap[itemn.InputSignature:])
+                methodDict["qualifiers"] = qualifiers
+            if itemn.InputSignature != 0xFFFFFFFF:
+                inputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(
+                    heap[itemn.InputSignature :]
+                )
                 if inputSignature.EncodingLength > 0:
-                    methodDict['InParams'] = inputSignature.ObjectBlock.ClassType.CurrentClass.getProperties()
-                    methodDict['InParamsRaw'] = inputSignature.ObjectBlock
-                    #print methodDict['InParams'] 
+                    methodDict["InParams"] = (
+                        inputSignature.ObjectBlock.Encoding.CurrentClass.getProperties()
+                    )
+                    methodDict["InParamsRaw"] = inputSignature.ObjectBlock
+                    # print methodDict['InParams']
                 else:
-                    methodDict['InParams'] = None
-            if itemn.OutputSignature != 0xffffffff:
-                outputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(heap[itemn.OutputSignature:])
+                    methodDict["InParams"] = None
+            if itemn.OutputSignature != 0xFFFFFFFF:
+                outputSignature: METHOD_SIGNATURE_BLOCK = METHOD_SIGNATURE_BLOCK(
+                    heap[itemn.OutputSignature :]
+                )
                 if outputSignature.EncodingLength > 0:
-                    methodDict['OutParams'] = outputSignature.ObjectBlock.ClassType.CurrentClass.getProperties()
-                    methodDict['OutParamsRaw'] = outputSignature.ObjectBlock
+                    methodDict["OutParams"] = (
+                        outputSignature.ObjectBlock.Encoding.CurrentClass.getProperties()
+                    )
+                    methodDict["OutParamsRaw"] = outputSignature.ObjectBlock
                 else:
-                    methodDict['OutParams'] = None
+                    methodDict["OutParams"] = None
             data = data[24:]
-            methods[methodDict['name']] = methodDict
+            methods[methodDict["name"]] = methodDict
 
         return methods
 
@@ -672,29 +726,155 @@ class CLASS_AND_METHODS_PART(Packet):
     def extract_padding(self, s):
         return b"", s
 
-    def getClassName(self) -> str:
+    def getClassName(self) -> str | None:
         pClassName = self.ClassPart.ClassHeader.ClassNameRef
         cHeap = self.ClassPart.ClassHeap.HeapItem
         if pClassName == 0xFFFFFFFF:
-            return "None"
+            # This value indicates that there is no parent CIM class name because base is the basest class.
+            return None
         else:
-            className: str = ENCODED_STRING(cHeap[pClassName:]).str_value()
-            derivationList = self.ClassPart.DerivationList.ClassNameEncoding
-            while len(derivationList) > 0:
-                superClass: ENCODED_STRING = ENCODED_STRING(derivationList)
-                className += " : %s " % superClass.str_value()
-                derivationList = derivationList[superClass.bytes_len() + 4 :]
-            return className
+            return ENCODED_STRING(cHeap[pClassName:]).str_value()
+
+    def getSuperclassesInheritance(self) -> list[str] | None:
+        first = self.getClassName()
+        if first is None:
+            return []
+        inheritance = [first]
+        derivationList = self.ClassPart.DerivationList.ClassNameEncoding
+        while len(derivationList) > 0:
+            superClass: ENCODED_STRING = ENCODED_STRING(derivationList)
+            inheritance.append(superClass.str_value())
+            derivationList = derivationList[superClass.bytes_len() + 4 :]
+        return inheritance
 
     def getQualifiers(self):
         return self.ClassPart.getQualifiers()
 
     def getProperties(self):
         return self.ClassPart.getProperties()
-    
+
     def getMethods(self):
         return self.MethodsPart.getMethods()
 
+    def print(self, cInstance: "INSTANCE_TYPE | None" = None):
+        qualifiers = self.getQualifiers()
+
+        for qualifier in qualifiers:
+            print("[%s]" % qualifier)
+
+        className = " : ".join(self.getSuperclassesInheritance())
+
+        print("class %s \n{" % className)
+
+        properties = self.getProperties()
+        if cInstance is not None:
+            properties = cInstance.getValues(properties)
+
+        for pName in properties:
+            # if property['inherited'] == 0:
+            qualifiers = properties[pName]["qualifiers"]
+            for qName in qualifiers:
+                if qName != "CIMTYPE":
+                    print("\t[%s(%s)]" % (qName, qualifiers[qName]))
+            print(
+                "\t%s %s" % (properties[pName]["stype"], properties[pName]["name"]),
+                end=" ",
+            )
+            if properties[pName]["value"] is not None:
+                cimType = properties[pName]["type"] & (~Inherited)
+                if cimType == CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value:
+                    print("= IWbemClassObject\n")
+                elif cimType == CIM_TYPE_ENUM.CIM_ARRAY_OBJECT.value:
+                    if properties[pName]["value"] == 0:
+                        print("= %s\n" % properties[pName]["value"])
+                    else:
+                        print(
+                            "= %s\n"
+                            % list(
+                                "IWbemClassObject"
+                                for _ in range(len(properties[pName]["value"]))
+                            )
+                        )
+                else:
+                    print("= %s\n" % properties[pName]["value"])
+            else:
+                print("\n")
+
+        print()
+        methods = self.getMethods()
+        for methodName in methods:
+            for qualifier in methods[methodName]["qualifiers"]:
+                print("\t[%s]" % qualifier)
+
+            print(CLASS_AND_METHODS_PART.method_str(methodName, methods[methodName]))
+
+        print("}")
+
+    def method_str(methodName: str, method: dict) -> str:
+        res = ""
+        if method["InParams"] is None and method["OutParams"] is None:
+            res += "\t%s %s();\n" % ("void", methodName)
+        if method["InParams"] is None and len(method["OutParams"]) == 1:
+            res += "\t%s %s();\n" % (
+                method["OutParams"]["ReturnValue"]["stype"],
+                methodName,
+            )
+        else:
+            returnValue = b""
+            if method["OutParams"] is not None:
+                # Search the Return Value
+                # returnValue = (item for item in method['OutParams'] if item["name"] == "ReturnValue").next()
+                if "ReturnValue" in method["OutParams"]:
+                    returnValue = method["OutParams"]["ReturnValue"]["stype"]
+
+            res += "\t%s %s(\n" % (returnValue, methodName)
+            if method["InParams"] is not None:
+                for pName in method["InParams"]:
+                    res += "\t\t[in]    %s %s,\n" % (
+                        method["InParams"][pName]["stype"],
+                        pName,
+                    )
+
+            if method["OutParams"] is not None:
+                for pName in method["OutParams"]:
+                    if pName != "ReturnValue":
+                        res += "\t\t[out]    %s %s,\n" % (
+                            method["OutParams"][pName]["stype"],
+                            pName,
+                        )
+
+            res += "\t);\n"
+        return res
+    
+    def method_flat_str(methodName: str, method: dict) -> str:
+        # Return str func like funcName(type1 param1, type2 param2)
+        res = ""
+        if method["InParams"] is None and method["OutParams"] is None:
+            res += "%s %s()" % ("void", methodName)
+        if method["InParams"] is None and len(method["OutParams"]) == 1:
+            res += "%s %s()" % (
+                method["OutParams"]["ReturnValue"]["stype"],
+                methodName,
+            )
+        else:
+            returnValue = b""
+            if method["OutParams"] is not None:
+                # Search the Return Value
+                # returnValue = (item for item in method['OutParams'] if item["name"] == "ReturnValue").next()
+                if "ReturnValue" in method["OutParams"]:
+                    returnValue = method["OutParams"]["ReturnValue"]["stype"]
+
+            res += "%s %s(" % (returnValue, methodName)
+            params = []
+            if method["InParams"] is not None:
+                for pName in method["InParams"]:
+                    params.append("%s %s" % (
+                        method["InParams"][pName]["stype"],
+                        pName,
+                    ))
+
+            res += ", ".join(params) + ")"
+        return res
 
 class CURRENT_CLASS_NO_METHODS(CLASS_AND_METHODS_PART):
     name = "CurrentClassNoMethods"
@@ -732,42 +912,78 @@ class INSTANCE_QUALIFIER_SET(Packet):
         return b"", s
 
 
+# 2.2.10 Encoding
+class ENCODING(Packet):
+    CurrentClass: CURRENT_CLASS_NO_METHODS
+    parsedCurrent: OrderedDict
+
+    def parse(self):
+        raise NotImplementedError("Implemented in child")
+
+    def print(self):
+        raise NotImplementedError("Implemented in child")
+
+    def printInformation(self):
+        raise NotImplementedError("Implemented in child")
+
+
 # 2.2.53 InstanceType
-class INSTANCE_TYPE(Packet):
+class INSTANCE_TYPE(ENCODING):
     name = "InstanceType"
     CurrentClass: CURRENT_CLASS_NO_METHODS
+    parsedCurrent: OrderedDict
     EncodingLength: int
     InstanceFlags: int
     InstanceClassName: int
-    NdTable_ValueTable: str
+    # NdTable is an encoded table that represents the behavior of the default value of properties in a CIM class.
+    # Information of inheritage must be maintained in the encoding.
+    # Only 2 bits are required to indicate this information for each property; therefore, the bit fields are packed into octets.
+    # octetCount = (PropertyCount - 1) / 4 + 1 // a formula, not ABNF
+    # When encoding or decoding NdTable under InstanceType, the PropertyCount specified in InstanceType.CurrentClass.ClassPart.PropertyLookupTable MUST be used
+    NdTable: str
+    # ValueTable encodes the literal values of the properties or references to their values in the heap
+    # the value here is relevant only if the corresponding NDTable bits for that property are both not set, that is, 0
+    # When encoding or decoding ValueTable under InstanceData of InstanceType, the NdTableValueTableLength specified in InstanceType.CurrentClass.ClassPart.ClassHeader MUST be used.
+    InstanceData: str
     InstanceQualifierSet: INSTANCE_QUALIFIER_SET
     InstanceHeap: CLASS_HEAP
     fields_desc = [
         PacketField("CurrentClass", None, CURRENT_CLASS_NO_METHODS),
         LEIntField("EncodingLength", None),  # 2.2.73 EncodingLength
-        ByteField("InstanceFlags", None),  # 2.2.54 InstanceFlags
-        LEIntField("InstanceClassName", None),  # 2.2.69 HeapRef
+        ByteField("InstanceFlags", 0x00),  # 2.2.54 InstanceFlags
+        LEIntField("InstanceClassName", 0x00000000),  # 2.2.69 HeapRef
         StrLenField(
-            "NdTable_ValueTable",
+            "NdTable",
             b"",
-            length_from=lambda pkt: pkt.CurrentClass.ClassPart.ClassHeader.NdTableValueTableLength,
+            lambda pkt: (
+                pkt.CurrentClass.ClassPart.PropertyLookupTable.PropertyCount - 1
+            )
+            // 4
+            + 1,
+        ),
+        StrLenField(
+            "InstanceData",
+            b"",
+            lambda pkt: pkt.CurrentClass.ClassPart.ClassHeader.NdTableValueTableLength
+            - (
+                (pkt.CurrentClass.ClassPart.PropertyLookupTable.PropertyCount - 1) // 4
+                + 1
+            ),
         ),
         PacketField("InstanceQualifierSet", None, INSTANCE_QUALIFIER_SET),
         PacketField("InstanceHeap", None, CLASS_HEAP),
     ]
 
     def __processNdTable(self, properties):
-        octetCount = (len(properties) - 1) // 4 + 1  # see [MS-WMIO]: 2.2.26 NdTable
-        packedNdTable = self.NdTable_ValueTable[:octetCount]
         unpackedNdTable = [
-            (byte >> shift) & 0b11 for byte in packedNdTable for shift in (0, 2, 4, 6)
+            (byte >> shift) & 0b11
+            for byte in self.InstanceData
+            for shift in (0, 2, 4, 6)
         ]
         for key in properties:
             ndEntry = unpackedNdTable[properties[key]["order"]]
             properties[key]["null_default"] = bool(ndEntry & 0b01)
             properties[key]["inherited_default"] = bool(ndEntry & 0b10)
-
-        return octetCount
 
     @staticmethod
     def __isNonNullNumber(prop):
@@ -777,8 +993,8 @@ class INSTANCE_TYPE(Packet):
 
     def getValues(self, properties: dict):
         heap = self.InstanceHeap.HeapItem
-        valueTableOff = self.__processNdTable(properties)
-        valueTable = self.NdTable_ValueTable[valueTableOff:]
+        self.__processNdTable(properties)
+        valueTable = self.InstanceData
         sorted_props = sorted(
             list(properties.keys()), key=lambda k: properties[k]["order"]
         )
@@ -806,16 +1022,81 @@ class INSTANCE_TYPE(Packet):
             valueTable = valueTable[dataSize:]
         return properties
 
+    def parse(self):
+        pClass: CLASS_AND_METHODS_PART = self.CurrentClass
+        self.parsedCurrent = OrderedDict()
+        self.parsedCurrent["name"] = " : ".join(pClass.getSuperclassesInheritance())
+        self.parsedCurrent["qualifiers"] = pClass.getQualifiers()
+        self.parsedCurrent["properties"] = pClass.getProperties()
+        self.parsedCurrent["methods"] = pClass.getMethods()
+
+        self.parsedCurrent["values"] = self.getValues(self.parsedCurrent["properties"])
+
+    def print(self):
+        if len(self.CurrentClass.getSuperclassesInheritance()) > 0:
+            self.CurrentClass.print(self)
+
+    def get_rel_path(self) -> str:
+        # Compute RELPATH <ClassName>.<KeyProperty>=<Value>[,<KeyProperty>=<Value>...]
+        properties = self.CurrentClass.getProperties()
+        properties = self.getValues(properties)
+
+        keyProperties: dict[str, str] = dict()
+        for pName in properties:
+            qualifiers = properties[pName]["qualifiers"]
+            if "key" in qualifiers:
+                keyProperties[pName] = properties[pName]["value"]
+
+        return f"{self.CurrentClass.getClassName()}." + ",".join(
+            f'{key}="{value}"' for key, value in keyProperties.items()
+        )
+
     def extract_padding(self, s):
         return b"", s
 
-class CLASS_TYPE(Packet):
+    def post_build(self, pkt, pay):
+        # Compute EncodingLength
+        if self.EncodingLength is None and self.CurrentClass is not None:
+            currClassLen = len(self.CurrentClass)
+            pkt = (
+                pkt[:currClassLen]
+                + (len(pkt) - currClassLen).to_bytes(length=4, byteorder="little")
+                + pkt[currClassLen + 4 :]
+            )
+        return pkt + pay
+
+
+class CLASS_TYPE(ENCODING):
     ParentClass: CLASS_AND_METHODS_PART
     CurrentClass: CLASS_AND_METHODS_PART
+    parsedParent: OrderedDict
+    parsedCurrent: OrderedDict
     fields_desc = [
         PacketField("ParentClass", None, CLASS_AND_METHODS_PART),
-        PacketField("CurrentClass", None, CLASS_AND_METHODS_PART)
+        PacketField("CurrentClass", None, CLASS_AND_METHODS_PART),
     ]
+
+    def parse(self):
+        pClass = self.ParentClass
+        self.parsedParent = OrderedDict()
+        self.parsedParent["name"] = " : ".join(pClass.getSuperclassesInheritance())
+        self.parsedParent["qualifiers"] = pClass.getQualifiers()
+        self.parsedParent["properties"] = pClass.getProperties()
+        self.parsedParent["methods"] = pClass.getMethods()
+
+        cClass = self.CurrentClass
+        self.parsedCurrent = OrderedDict()
+        self.parsedCurrent["name"] = " : ".join(cClass.getSuperclassesInheritance())
+        self.parsedCurrent["qualifiers"] = cClass.getQualifiers()
+        self.parsedCurrent["properties"] = cClass.getProperties()
+        self.parsedCurrent["methods"] = cClass.getMethods()
+
+    def print(self):
+        if len(self.ParentClass.getSuperclassesInheritance()) > 0:
+            self.ParentClass.print()
+
+        if len(self.CurrentClass.getSuperclassesInheritance()) > 0:
+            self.CurrentClass.print()
 
 
 # 2.2.5 ObjectBlock
@@ -823,187 +1104,38 @@ class OBJECT_BLOCK(Packet):
     name = "ObjectBlock"
     ObjectFlags: int
     Decoration: Optional[DECORATION]
-    InstanceType: INSTANCE_TYPE
-    ClassType: CLASS_TYPE
+    Encoding: ENCODING
     fields_desc = [
         ByteField("ObjectFlags", None),
         ConditionalField(  # This block MUST be present if the ObjectFlags (section 2.2.6) octet has 0x04 bit flag set; otherwise, it MUST be omitted.
             PacketField("Decoration", None, DECORATION), lambda p: p.ObjectFlags & 0x04
         ),
-        ConditionalField(
-            PacketField("InstanceType", None, INSTANCE_TYPE), lambda p: p.ObjectFlags & 0x02
-        ),
-        ConditionalField(
-            PacketField("ClassType", None, CLASS_TYPE), lambda p: p.ObjectFlags & 0x01
+        MultipleTypeField(
+            [
+                (
+                    PacketField("Encoding", None, INSTANCE_TYPE),
+                    lambda p: p.ObjectFlags & 0x02,
+                ),
+                (
+                    PacketField("Encoding", None, CLASS_TYPE),
+                    lambda p: p.ObjectFlags & 0x01,
+                ),
+            ],
+            PacketField("Encoding", None, Raw),
         ),
     ]
 
-    def extract_padding(self, s):
-        return b"", s
+    def isInstance(self) -> bool:
+        return bool(self.ObjectFlags & 0x02)
 
     def parseObject(self):
-        if self.ObjectFlags & 0x02:
-            # The object is a CIM instance
-            ctCurrent: CLASS_AND_METHODS_PART = self.InstanceType.CurrentClass
-            currentName = ctCurrent.getClassName()
-            if currentName is not None:
-                self.ctCurrent = self.parseClass(ctCurrent, self.InstanceType)
-            return
-        else:
-            # The object is a CIM class
-            ctParent: CLASS_AND_METHODS_PART = self.ClassType.ParentClass
-            ctCurrent: CLASS_AND_METHODS_PART = self.ClassType.CurrentClass
-
-            parentName = ctParent.getClassName()
-            if parentName is not None:
-                self.ctParent = self.parseClass(ctParent)
-
-            currentName = ctCurrent.getClassName()
-            if currentName is not None:
-                self.ctCurrent = self.parseClass(ctCurrent)
-
-    def parseClass(
-        self, pClass: CLASS_AND_METHODS_PART, cInstance: INSTANCE_TYPE = None
-    ):
-        classDict = OrderedDict()
-        classDict["name"] = pClass.getClassName()
-        classDict["qualifiers"] = pClass.getQualifiers()
-        classDict["properties"] = pClass.getProperties()
-        classDict["methods"] = pClass.getMethods()
-
-        if cInstance is not None:
-            classDict["values"] = cInstance.getValues(classDict["properties"])
-        else:
-            classDict["values"] = None
-
-        return classDict
-
-    def isInstance(self):
-        if self.ObjectFlags & 0x01:
-            return False
-        return True
-
-    def printClass(
-        self, pClass: CLASS_AND_METHODS_PART, cInstance: INSTANCE_TYPE = None
-    ):
-        qualifiers = pClass.getQualifiers()
-
-        for qualifier in qualifiers:
-            print("[%s]" % qualifier)
-
-        className = pClass.getClassName()
-
-        print("class %s \n{" % className)
-
-        properties = pClass.getProperties()
-        if cInstance is not None:
-            properties = cInstance.getValues(properties)
-
-        for pName in properties:
-            # if property['inherited'] == 0:
-            qualifiers = properties[pName]["qualifiers"]
-            for qName in qualifiers:
-                if qName != "CIMTYPE":
-                    print("\t[%s(%s)]" % (qName, qualifiers[qName]))
-            print(
-                "\t%s %s" % (properties[pName]["stype"], properties[pName]["name"]),
-                end=" ",
-            )
-            if properties[pName]["value"] is not None:
-                cimType = properties[pName]["type"] & (~Inherited)
-                if cimType == CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value:
-                    print("= IWbemClassObject\n")
-                elif cimType == CIM_TYPE_ENUM.CIM_ARRAY_OBJECT.value:
-                    if properties[pName]["value"] == 0:
-                        print("= %s\n" % properties[pName]["value"])
-                    else:
-                        print(
-                            "= %s\n"
-                            % list(
-                                "IWbemClassObject"
-                                for _ in range(len(properties[pName]["value"]))
-                            )
-                        )
-                else:
-                    print("= %s\n" % properties[pName]["value"])
-            else:
-                print("\n")
-
-        print()
-        methods = pClass.getMethods()
-        for methodName in methods:
-            for qualifier in methods[methodName]["qualifiers"]:
-                print("\t[%s]" % qualifier)
-
-            if (
-                methods[methodName]["InParams"] is None
-                and methods[methodName]["OutParams"] is None
-            ):
-                print("\t%s %s();\n" % ("void", methodName))
-            if (
-                methods[methodName]["InParams"] is None
-                and len(methods[methodName]["OutParams"]) == 1
-            ):
-                print(
-                    "\t%s %s();\n"
-                    % (
-                        methods[methodName]["OutParams"]["ReturnValue"]["stype"],
-                        methodName,
-                    )
-                )
-            else:
-                returnValue = b""
-                if methods[methodName]["OutParams"] is not None:
-                    # Search the Return Value
-                    # returnValue = (item for item in method['OutParams'] if item["name"] == "ReturnValue").next()
-                    if "ReturnValue" in methods[methodName]["OutParams"]:
-                        returnValue = methods[methodName]["OutParams"]["ReturnValue"][
-                            "stype"
-                        ]
-
-                print("\t%s %s(\n" % (returnValue, methodName), end=" ")
-                if methods[methodName]["InParams"] is not None:
-                    for pName in methods[methodName]["InParams"]:
-                        print(
-                            "\t\t[in]    %s %s,"
-                            % (methods[methodName]["InParams"][pName]["stype"], pName)
-                        )
-
-                if methods[methodName]["OutParams"] is not None:
-                    for pName in methods[methodName]["OutParams"]:
-                        if pName != "ReturnValue":
-                            print(
-                                "\t\t[out]    %s %s,"
-                                % (
-                                    methods[methodName]["OutParams"][pName]["stype"],
-                                    pName,
-                                )
-                            )
-
-                print("\t);\n")
-
-        print("}")
+        self.Encoding.parse()
 
     def printInformation(self):
-        if self.ObjectFlags & 0x02:
-            # The object is a CIM instance
-            ctCurrent: CLASS_AND_METHODS_PART = self.InstanceType.CurrentClass
-            currentName = ctCurrent.getClassName()
-            if currentName is not None:
-                self.printClass(ctCurrent, self.InstanceType)
-            return
-        else:
-            # The object is a CIM class
-            ctParent: CLASS_AND_METHODS_PART = self.ClassType.ParentClass
-            ctCurrent: CLASS_AND_METHODS_PART = self.ClassType.CurrentClass
+        self.Encoding.print()
 
-            parentName = ctParent.getClassName()
-            if parentName is not None:
-                self.printClass(ctParent)
-
-            currentName = ctCurrent.getClassName()
-            if currentName is not None:
-                self.printClass(ctCurrent)
+    def extract_padding(self, s):
+        return b"", s
 
 
 # 2.2.70 MethodSignatureBlock
@@ -1031,6 +1163,68 @@ class ENCODING_UNIT(Packet):
         LEIntField("ObjectEncodingLength", None),  # 2.2.4 ObjectEncodingLength
         PacketField("ObjectBlock", None, OBJECT_BLOCK),
     ]
+
+    def post_build(self, pkt, pay):
+        if self.ObjectEncodingLength is None:
+            pkt = (
+                pkt[:4] + len(pay).to_bytes(length=4, byteorder="little") + pkt[4 + 4 :]
+            )
+        return pkt + pay
+
+
+def build_argument(paramDefinition, arg, curHeapPtr: int) -> tuple[bytes, int, int]:
+    """
+    Build heap, ValueTable and NdTable (NullAndDefaultFlag)
+
+    :param paramDefinition: Description
+    :param arg: Description
+    :return: Description
+    :rtype: bytes
+    """
+
+    pType = paramDefinition["type"] & (~(CIM_ARRAY_FLAG | Inherited))
+    # The NdTable (section 2.2.26) indicates whether a particular CIM property
+    # has a default value that is locally defined in the current CIM class or whether the default is defined in a
+    # superclass. The ValueTable (section 2.2.29) contains values inline for simple numeric properties, or
+    # references to the values in the ClassHeap (section 2.2.37) for all other specified values in the
+    # HeapItem rule, such as arrays or strings.
+
+    if paramDefinition["type"] & CIM_ARRAY_FLAG:
+        raise ValueError("What's this ?")
+
+    if pType not in (
+        CIM_TYPE_ENUM.CIM_TYPE_STRING.value,
+        CIM_TYPE_ENUM.CIM_TYPE_DATETIME.value,
+        CIM_TYPE_ENUM.CIM_TYPE_REFERENCE.value,
+        CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value,
+    ):
+        if arg is None:
+            # For now we just pack None and set the inherited_default
+            # flag, just in case a parent class defines this for us
+            NullAndDefaultFlag = 0b1 << 1 | 0b1  # 2.2.27 NullAndDefaultFlag
+            return (b"", b"\x00" * 4, NullAndDefaultFlag)
+        else:
+            ftype = CIM_TYPES_REF[pType]("arg")
+            return (
+                struct.pack(ftype.fmt, arg),
+                curHeapPtr.to_bytes(length=4, byteorder="little"),
+                0,
+            )
+    elif pType == CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value:
+        if arg is None:
+            # For now we just pack None and set the inherited_default
+            # flag, just in case a parent class defines this for us
+            NullAndDefaultFlag = 0b1 << 1 | 0b1  # 2.2.27 NullAndDefaultFlag
+            return (b"", b"\x00" * 4, NullAndDefaultFlag)
+        else:
+            raise ValueError("Not implemented case")
+    else:
+        strIn: ENCODED_STRING
+        if type(arg) is str:
+            strIn = ENCODED_STRING(encodedStringFlag=0x1) / arg.encode("utf-16le")
+        else:
+            strIn = ENCODED_STRING() / arg
+        return (bytes(strIn), curHeapPtr.to_bytes(length=4, byteorder="little"), 0)
 
 
 if __name__ == "__main__":
