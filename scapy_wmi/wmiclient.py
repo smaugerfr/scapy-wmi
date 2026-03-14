@@ -808,7 +808,20 @@ class wmiclient(CLIUtil):
 
         args = prompt("Arguments for " + result + " : ")
 
-        args_array = map(str.strip, args.split(","))
+        def convert_arg(arg: str):
+            arg = arg.strip()
+            if arg == "None":
+                return None
+            elif arg.isdigit():
+                return int(arg)
+            elif arg.lower() in ["true", "false"]:
+                return arg.lower() == "true"
+            else:
+                return arg
+
+        # Strip and transform None str to None value, int to int, bool to bool
+        args_array = map(convert_arg, args.split(","))
+        
         method = getattr(classObj, result)
         method(*args_array)
 
