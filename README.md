@@ -27,7 +27,6 @@ $ scapy
 >>> from scapy.config import conf
 >>> print(conf.exts)
 ```
-<!-- stop_ppi_description -->
 ## Installation
 ```
 $ pip install .
@@ -35,3 +34,5 @@ $ pip install .
 
 ## Example
 For a simple usage see `main.py`, it shows also how to use type checking
+
+<!-- stop_ppi_description -->

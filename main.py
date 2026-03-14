@@ -16,18 +16,8 @@ if TYPE_CHECKING:
 
 if __name__ == "__main__":
     ntlmssp = NTLMSSP(UPN="Administrator", PASSWORD="StrongPa55!")
-    ssp = SPNEGOSSP(
-        [
-            ntlmssp,
-        ]
-    )
+    ssp = SPNEGOSSP([
+        ntlmssp,
+    ])
 
-    # wmiclient("192.168.100.100", ssp=ntlmssp, debug=0, REQUIRE_ENCRYPTION=True)
-
-    cli = wmiclient(
-        "192.168.100.100", ssp=ssp, debug=0, REQUIRE_ENCRYPTION=False, cli=False
-    )
-    ptr = cli.client.getObject("Win32_Process", cli.objref_wmi)
-    IWbemClassObject(ptr, cli.client).Create(r"cmd.exe /Q /c whoami /all > C:\test_scapy_wmi.txt", "C:\\", None)
-
-    cli.close()
+    wmiclient("192.168.100.100", ssp=ntlmssp, debug=0, REQUIRE_ENCRYPTION=True)
