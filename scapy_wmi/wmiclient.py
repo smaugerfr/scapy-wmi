@@ -39,6 +39,7 @@ from scapy_wmi.msrpce.mswmio import (
     CLASS_HEAP,
     INSTANCE_QUALIFIER_SET,
     build_argument,
+    CLASS_AND_METHODS_PART,
 )
 from scapy_wmi.types.wmi_classes import WMI_Class
 
@@ -70,12 +71,16 @@ class IWbemClassObject:
 
         if self.encodingUnit.ObjectBlock.isInstance():
             # get object CIM class
-            cim_class = self.encodingUnit.ObjectBlock.Encoding.CurrentClass.getClassName()
+            cim_class = (
+                self.encodingUnit.ObjectBlock.Encoding.CurrentClass.getClassName()
+            )
             relpath = self.encodingUnit.ObjectBlock.Encoding.get_rel_path()
             ptr = self.client.getObject(cim_class, wmi_client.current_namespace)
             self.objRef = OBJREF(ptr.abData)
 
-            self.encodingUnit: ENCODING_UNIT = ENCODING_UNIT(self.objRef.pObjectData.load)
+            self.encodingUnit: ENCODING_UNIT = ENCODING_UNIT(
+                self.objRef.pObjectData.load
+            )
             self.encodingUnit.ObjectBlock.parseObject()
 
             self.createMethods(relpath, self.getMethods())
@@ -94,9 +99,23 @@ class IWbemClassObject:
         if self.encodingUnit.ObjectBlock.Encoding.parsedCurrent:
             return self.encodingUnit.ObjectBlock.Encoding.parsedCurrent["properties"]
         return dict()
-    
+
     def printInformation(self):
         self.encodingUnit.ObjectBlock.printInformation()
+
+    def getMethodsDict(self):
+        res = []
+        methods = self.getMethods()
+        for methodName in methods:
+            res.append(
+                (
+                    methodName,
+                    CLASS_AND_METHODS_PART.method_flat_str(
+                        methodName, methods[methodName]
+                    ),
+                )
+            )
+        return res
 
     def createMethods(self, objectPath: str, methods: dict):
         class FunctionPool:
@@ -334,10 +353,16 @@ class WMI_Client(DCOM_Client):
         obj: OBJREF | None,
         objref_wmi: ObjectInstance | None = None,
     ):
-        inParams = NDRPointer(
-            referent_id=0x72657355,
-            value=MInterfacePointer(max_count=len(bytes(obj)), abData=bytes(obj)),
-        )
+        if obj:
+            inParams = NDRPointer(
+                referent_id=0x72657355,
+                value=MInterfacePointer(max_count=len(bytes(obj)), abData=bytes(obj)),
+            )
+        else:
+            inParams = NDRPointer(
+                referent_id=0x72657355,
+                value=MInterfacePointer(max_count=0),
+            )
 
         pktctr = ExecMethod_Request(
             strObjectPath=NDRPointer(
@@ -383,10 +408,14 @@ class WMI_Client(DCOM_Client):
             result_query.show()
             raise ValueError("Error despite response")
 
-        resObj = OBJREF(result_query.ppOutParams.value.value.abData)
-        enc: ENCODING_UNIT = ENCODING_UNIT(resObj.pObjectData.load)
-        enc.ObjectBlock.parseObject()
-        enc.ObjectBlock.printInformation()
+        if result_query.status == 0:
+            resObj = OBJREF(result_query.ppOutParams.value.value.abData)
+            enc: ENCODING_UNIT = ENCODING_UNIT(resObj.pObjectData.load)
+            enc.ObjectBlock.parseObject()
+            enc.ObjectBlock.printInformation()
+        else:
+            result_query.show()
+            raise ValueError("Error returned")
 
     def get_query_result(self, obj_ppEnum: ObjectInstance) -> list[MInterfacePointer]:
         op = IENUMWBEMCLASSOBJECT_OPNUMS[4]  # opnum 4 -> Next
@@ -501,6 +530,7 @@ class wmiclient(CLIUtil):
     objref_wmi: ObjectInstance
     namespace_cache: dict[str, list[str]]
     classes_cache: dict[str, dict[str, OBJECT_BLOCK]]
+    last_result_cache: dict[str, OBJECT_BLOCK]
 
     def __init__(
         self,
@@ -549,6 +579,7 @@ class wmiclient(CLIUtil):
 
         self.namespace_cache = dict()
         self.classes_cache = dict()
+        self.last_result_cache = dict()
         # Create connection
         self.client = WMI_Client(ssp=ssp, auth_level=auth_level, verb=bool(debug))
         self.client.connect(target, timeout)
@@ -598,6 +629,7 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
+            self.last_result_cache[objBlk.Encoding.get_rel_path()] = objBlk
             record = objBlk.Encoding.parsedCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
@@ -632,6 +664,7 @@ class wmiclient(CLIUtil):
             encodingUnit: ENCODING_UNIT = ENCODING_UNIT(obj_.pObjectData.load)
             objBlk: OBJECT_BLOCK = encodingUnit.ObjectBlock
             objBlk.parseObject()
+            self.last_result_cache[objBlk.Encoding.get_rel_path()] = objBlk
             record = objBlk.Encoding.parsedCurrent["properties"]
             # Get padding, get the longer title
             pad_len = 0
@@ -745,3 +778,39 @@ class wmiclient(CLIUtil):
                     f"{"{"+textwrap.shorten(", ".join(methods), 34, placeholder="...", break_long_words=True)+"}":<34}",
                     f"{"{"+textwrap.shorten(", ".join(properties), 34, placeholder="...", break_long_words=True)+"}":<34}",
                 )
+
+    @CLIUtil.addcommand()
+    def exec(self, path: str) -> IWbemClassObject:
+        ptr = self.client.getObject(path, self.objref_wmi)
+        obj = IWbemClassObject(ptr, self.client)
+        return obj
+
+    @CLIUtil.addoutput(exec)
+    def exec_output(self, classObj: IWbemClassObject):
+        classObj.printInformation()
+        # Propose select method
+        from prompt_toolkit.shortcuts import choice
+        from prompt_toolkit.formatted_text import HTML
+
+        print(classObj.getMethodsDict())
+        result = choice(
+            message="Please choose a method:",
+            options=classObj.getMethodsDict(),
+            bottom_toolbar=HTML(
+                " Press <b>[Up]</b>/<b>[Down]</b> to select, <b>[Enter]</b> to accept."
+            ),
+        )
+        # Ask for args
+        from prompt_toolkit import prompt
+
+        args = prompt(
+            "Arguments for " + result + " : "
+        )
+
+        args_array = map(str.strip, args.split(","))
+        method = getattr(classObj, result)
+        method(*args_array)
+
+    @CLIUtil.addcomplete(exec)
+    def exec_complete(self, path: str) -> list:
+        return self.last_result_cache.keys()

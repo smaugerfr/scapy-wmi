@@ -756,6 +756,125 @@ class CLASS_AND_METHODS_PART(Packet):
     def getMethods(self):
         return self.MethodsPart.getMethods()
 
+    def print(self, cInstance: "INSTANCE_TYPE | None" = None):
+        qualifiers = self.getQualifiers()
+
+        for qualifier in qualifiers:
+            print("[%s]" % qualifier)
+
+        className = " : ".join(self.getSuperclassesInheritance())
+
+        print("class %s \n{" % className)
+
+        properties = self.getProperties()
+        if cInstance is not None:
+            properties = cInstance.getValues(properties)
+
+        for pName in properties:
+            # if property['inherited'] == 0:
+            qualifiers = properties[pName]["qualifiers"]
+            for qName in qualifiers:
+                if qName != "CIMTYPE":
+                    print("\t[%s(%s)]" % (qName, qualifiers[qName]))
+            print(
+                "\t%s %s" % (properties[pName]["stype"], properties[pName]["name"]),
+                end=" ",
+            )
+            if properties[pName]["value"] is not None:
+                cimType = properties[pName]["type"] & (~Inherited)
+                if cimType == CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value:
+                    print("= IWbemClassObject\n")
+                elif cimType == CIM_TYPE_ENUM.CIM_ARRAY_OBJECT.value:
+                    if properties[pName]["value"] == 0:
+                        print("= %s\n" % properties[pName]["value"])
+                    else:
+                        print(
+                            "= %s\n"
+                            % list(
+                                "IWbemClassObject"
+                                for _ in range(len(properties[pName]["value"]))
+                            )
+                        )
+                else:
+                    print("= %s\n" % properties[pName]["value"])
+            else:
+                print("\n")
+
+        print()
+        methods = self.getMethods()
+        for methodName in methods:
+            for qualifier in methods[methodName]["qualifiers"]:
+                print("\t[%s]" % qualifier)
+
+            print(CLASS_AND_METHODS_PART.method_str(methodName, methods[methodName]))
+
+        print("}")
+
+    def method_str(methodName: str, method: dict) -> str:
+        res = ""
+        if method["InParams"] is None and method["OutParams"] is None:
+            res += "\t%s %s();\n" % ("void", methodName)
+        if method["InParams"] is None and len(method["OutParams"]) == 1:
+            res += "\t%s %s();\n" % (
+                method["OutParams"]["ReturnValue"]["stype"],
+                methodName,
+            )
+        else:
+            returnValue = b""
+            if method["OutParams"] is not None:
+                # Search the Return Value
+                # returnValue = (item for item in method['OutParams'] if item["name"] == "ReturnValue").next()
+                if "ReturnValue" in method["OutParams"]:
+                    returnValue = method["OutParams"]["ReturnValue"]["stype"]
+
+            res += "\t%s %s(\n" % (returnValue, methodName)
+            if method["InParams"] is not None:
+                for pName in method["InParams"]:
+                    res += "\t\t[in]    %s %s,\n" % (
+                        method["InParams"][pName]["stype"],
+                        pName,
+                    )
+
+            if method["OutParams"] is not None:
+                for pName in method["OutParams"]:
+                    if pName != "ReturnValue":
+                        res += "\t\t[out]    %s %s,\n" % (
+                            method["OutParams"][pName]["stype"],
+                            pName,
+                        )
+
+            res += "\t);\n"
+        return res
+    
+    def method_flat_str(methodName: str, method: dict) -> str:
+        # Return str func like funcName(type1 param1, type2 param2)
+        res = ""
+        if method["InParams"] is None and method["OutParams"] is None:
+            res += "%s %s()" % ("void", methodName)
+        if method["InParams"] is None and len(method["OutParams"]) == 1:
+            res += "%s %s()" % (
+                method["OutParams"]["ReturnValue"]["stype"],
+                methodName,
+            )
+        else:
+            returnValue = b""
+            if method["OutParams"] is not None:
+                # Search the Return Value
+                # returnValue = (item for item in method['OutParams'] if item["name"] == "ReturnValue").next()
+                if "ReturnValue" in method["OutParams"]:
+                    returnValue = method["OutParams"]["ReturnValue"]["stype"]
+
+            res += "%s %s(" % (returnValue, methodName)
+            params = []
+            if method["InParams"] is not None:
+                for pName in method["InParams"]:
+                    params.append("%s %s" % (
+                        method["InParams"][pName]["stype"],
+                        pName,
+                    ))
+
+            res += ", ".join(params) + ")"
+        return res
 
 class CURRENT_CLASS_NO_METHODS(CLASS_AND_METHODS_PART):
     name = "CurrentClassNoMethods"
@@ -803,105 +922,6 @@ class ENCODING(Packet):
 
     def print(self):
         raise NotImplementedError("Implemented in child")
-
-    def printClass(pClass: CLASS_AND_METHODS_PART, cInstance: "INSTANCE_TYPE" = None):
-        qualifiers = pClass.getQualifiers()
-
-        for qualifier in qualifiers:
-            print("[%s]" % qualifier)
-
-        className = " : ".join(pClass.getSuperclassesInheritance())
-
-        print("class %s \n{" % className)
-
-        properties = pClass.getProperties()
-        if cInstance is not None:
-            properties = cInstance.getValues(properties)
-
-        for pName in properties:
-            # if property['inherited'] == 0:
-            qualifiers = properties[pName]["qualifiers"]
-            for qName in qualifiers:
-                if qName != "CIMTYPE":
-                    print("\t[%s(%s)]" % (qName, qualifiers[qName]))
-            print(
-                "\t%s %s" % (properties[pName]["stype"], properties[pName]["name"]),
-                end=" ",
-            )
-            if properties[pName]["value"] is not None:
-                cimType = properties[pName]["type"] & (~Inherited)
-                if cimType == CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value:
-                    print("= IWbemClassObject\n")
-                elif cimType == CIM_TYPE_ENUM.CIM_ARRAY_OBJECT.value:
-                    if properties[pName]["value"] == 0:
-                        print("= %s\n" % properties[pName]["value"])
-                    else:
-                        print(
-                            "= %s\n"
-                            % list(
-                                "IWbemClassObject"
-                                for _ in range(len(properties[pName]["value"]))
-                            )
-                        )
-                else:
-                    print("= %s\n" % properties[pName]["value"])
-            else:
-                print("\n")
-
-        print()
-        methods = pClass.getMethods()
-        for methodName in methods:
-            for qualifier in methods[methodName]["qualifiers"]:
-                print("\t[%s]" % qualifier)
-
-            if (
-                methods[methodName]["InParams"] is None
-                and methods[methodName]["OutParams"] is None
-            ):
-                print("\t%s %s();\n" % ("void", methodName))
-            if (
-                methods[methodName]["InParams"] is None
-                and len(methods[methodName]["OutParams"]) == 1
-            ):
-                print(
-                    "\t%s %s();\n"
-                    % (
-                        methods[methodName]["OutParams"]["ReturnValue"]["stype"],
-                        methodName,
-                    )
-                )
-            else:
-                returnValue = b""
-                if methods[methodName]["OutParams"] is not None:
-                    # Search the Return Value
-                    # returnValue = (item for item in method['OutParams'] if item["name"] == "ReturnValue").next()
-                    if "ReturnValue" in methods[methodName]["OutParams"]:
-                        returnValue = methods[methodName]["OutParams"]["ReturnValue"][
-                            "stype"
-                        ]
-
-                print("\t%s %s(\n" % (returnValue, methodName), end=" ")
-                if methods[methodName]["InParams"] is not None:
-                    for pName in methods[methodName]["InParams"]:
-                        print(
-                            "\t\t[in]    %s %s,"
-                            % (methods[methodName]["InParams"][pName]["stype"], pName)
-                        )
-
-                if methods[methodName]["OutParams"] is not None:
-                    for pName in methods[methodName]["OutParams"]:
-                        if pName != "ReturnValue":
-                            print(
-                                "\t\t[out]    %s %s,"
-                                % (
-                                    methods[methodName]["OutParams"][pName]["stype"],
-                                    pName,
-                                )
-                            )
-
-                print("\t);\n")
-
-        print("}")
 
     def printInformation(self):
         raise NotImplementedError("Implemented in child")
@@ -1014,7 +1034,7 @@ class INSTANCE_TYPE(ENCODING):
 
     def print(self):
         if len(self.CurrentClass.getSuperclassesInheritance()) > 0:
-            ENCODING.printClass(self.CurrentClass, self)
+            self.CurrentClass.print(self)
 
     def get_rel_path(self) -> str:
         # Compute RELPATH <ClassName>.<KeyProperty>=<Value>[,<KeyProperty>=<Value>...]
@@ -1028,7 +1048,7 @@ class INSTANCE_TYPE(ENCODING):
                 keyProperties[pName] = properties[pName]["value"]
 
         return f"{self.CurrentClass.getClassName()}." + ",".join(
-            f"{key}=\"{value}\"" for key, value in keyProperties.items()
+            f'{key}="{value}"' for key, value in keyProperties.items()
         )
 
     def extract_padding(self, s):
@@ -1073,10 +1093,10 @@ class CLASS_TYPE(ENCODING):
 
     def print(self):
         if len(self.ParentClass.getSuperclassesInheritance()) > 0:
-            ENCODING.printClass(self.ParentClass)
+            self.ParentClass.print()
 
         if len(self.CurrentClass.getSuperclassesInheritance()) > 0:
-            ENCODING.printClass(self.CurrentClass)
+            self.CurrentClass.print()
 
 
 # 2.2.5 ObjectBlock
@@ -1178,12 +1198,18 @@ def build_argument(paramDefinition, arg, curHeapPtr: int) -> tuple[bytes, int, i
         CIM_TYPE_ENUM.CIM_TYPE_REFERENCE.value,
         CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value,
     ):
-        ftype = CIM_TYPES_REF[pType]("arg")
-        return (
-            struct.pack(ftype.fmt, arg),
-            curHeapPtr.to_bytes(length=4, byteorder="little"),
-            0,
-        )
+        if arg is None:
+            # For now we just pack None and set the inherited_default
+            # flag, just in case a parent class defines this for us
+            NullAndDefaultFlag = 0b1 << 1 | 0b1  # 2.2.27 NullAndDefaultFlag
+            return (b"", b"\x00" * 4, NullAndDefaultFlag)
+        else:
+            ftype = CIM_TYPES_REF[pType]("arg")
+            return (
+                struct.pack(ftype.fmt, arg),
+                curHeapPtr.to_bytes(length=4, byteorder="little"),
+                0,
+            )
     elif pType == CIM_TYPE_ENUM.CIM_TYPE_OBJECT.value:
         if arg is None:
             # For now we just pack None and set the inherited_default
