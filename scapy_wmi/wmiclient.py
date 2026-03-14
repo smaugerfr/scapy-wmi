@@ -727,7 +727,8 @@ class wmiclient(CLIUtil):
         print("Switched to " + namespace)
 
     @CLIUtil.addcomplete(namespace)
-    def namespace_complete(self, namespace: str) -> list:
+    def namespace_complete(self, args: list) -> list:
+        namespace = args[0]
         if namespace.endswith("/") and namespace.startswith("root/"):
             return self._list_namespaces(namespace)
         elif not namespace.startswith("root"):
@@ -788,11 +789,13 @@ class wmiclient(CLIUtil):
     @CLIUtil.addoutput(exec)
     def exec_output(self, classObj: IWbemClassObject):
         classObj.printInformation()
+        if len(classObj.getMethodsDict()) == 0:
+            print("No methods on this class")
+            return
         # Propose select method
         from prompt_toolkit.shortcuts import choice
         from prompt_toolkit.formatted_text import HTML
 
-        print(classObj.getMethodsDict())
         result = choice(
             message="Please choose a method:",
             options=classObj.getMethodsDict(),
@@ -803,14 +806,21 @@ class wmiclient(CLIUtil):
         # Ask for args
         from prompt_toolkit import prompt
 
-        args = prompt(
-            "Arguments for " + result + " : "
-        )
+        args = prompt("Arguments for " + result + " : ")
 
         args_array = map(str.strip, args.split(","))
         method = getattr(classObj, result)
         method(*args_array)
 
     @CLIUtil.addcomplete(exec)
-    def exec_complete(self, path: str) -> list:
-        return self.last_result_cache.keys()
+    def exec_complete(self, args: list) -> list:
+        path = args[0]
+        cache = self.classes_cache.get(self.current_namescape)
+        if cache is not None:
+            classes = list(cache.keys()) + list(self.last_result_cache.keys())
+            print(self.last_result_cache.keys())
+            return [elt for elt in classes if elt.startswith(path)]
+        else:
+            return [
+                elt for elt in self.last_result_cache.keys() if elt.startswith(path)
+            ]
