@@ -9,6 +9,8 @@ It allows administrators to interact with WMI classes, fetch system information,
 
 It also can be used as offensive purpose as it allows to remotely create new process, but only use this in authorized environment
 
+https://github.com/user-attachments/assets/700e250e-ac71-498b-b2c8-ca000d913ca4
+
 ## Usage
 By adding follwing to `~/.config/scapy/prestart.py`
 ```
