@@ -5,7 +5,7 @@ This package provides a plugin that hooks into Scapy to register [MS-WMI] dissec
 
 It has been designed to execute [WMI](https://learn.microsoft.com/en-us/windows/win32/wmisdk/wmi-start-page) (Windows Management Instrumentation) queries, retrieve objects, and invoke methods on remote Windows machines over the network (tcp/135). 
 
-It allows administrators to interact with WMI classes, fetch system information, and perform administrative tasks—such as querying processes, services, or hardware details—without direct access to the target machine. The tool leverages standard WMI protocols and requires only network connectivity (port 135) and valid credentials for secure remote execution.
+It allows administrators to interact with WMI classes, fetch system information, and perform administrative tasks (querying processes, services, or hardware details) without direct access to the target machine. The tool leverages WMI protocol and requires only network connectivity (port 135) and valid credentials for secure remote execution.
 
 It also can be used as offensive purpose as it allows to remotely create new process, but only use this in authorized environment
 
